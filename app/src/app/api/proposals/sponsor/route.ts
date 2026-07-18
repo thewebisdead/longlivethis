@@ -107,19 +107,16 @@ export async function POST(req: Request) {
     const proposals = await listProposals()
     const proposal = proposals.find((p) => p.id === id)
     if (!proposal) return NextResponse.json({ error: 'proposal not found' }, { status: 404 })
-    if (proposal.sponsored) {
-      return NextResponse.json({ error: 'proposal is already sponsored' }, { status: 409 })
-    }
 
-    // Compute the required sponsor cost: 10% of current treasury balance.
+    // Compute the required boost cost: 10% of current treasury balance.
     const balance = await getUsdcBalance(WALLET_ADDRESS).catch(() => null)
     const cost = balance !== null ? Math.max(balance * 0.1, 0) : 0
 
-    // Verify the on-chain payment before applying the label.
-    await verifyUsdcTransfer(txHash, cost)
+    // Verify the on-chain payment before applying the boost.
+    const amount = await verifyUsdcTransfer(txHash, cost)
 
-    await sponsorProposal(id)
-    return NextResponse.json({ ok: true, cost })
+    await sponsorProposal(id, amount)
+    return NextResponse.json({ ok: true, cost, amount })
   } catch (err) {
     console.error('sponsor POST failed:', err)
     const message = err instanceof Error ? err.message : 'sponsor failed'

@@ -9,8 +9,10 @@ export interface Proposal {
   /** GitHub issue URL — where voting (reacting) happens */
   url: string
   created_at: string
-  /** Whether the proposal has been sponsored (boosted in ranking) */
-  sponsored?: boolean
+  /** Whether the proposal has been boosted (floats to top of feed) */
+  boosted?: boolean
+  /** Total USDC boosted for this proposal (sum of all boosts) */
+  boostTotal?: number
   /**
    * Estimated implementation cost tier for the agent.
    * Derived client-side from the proposal text — not stored in GitHub.
