@@ -38,67 +38,90 @@ function sortProposals(proposals: Proposal[]): Proposal[] {
   })
 }
 
+// USDC on Base wallet address passed via env (set at runtime via WALLET_ADDRESS).
+// The component receives it as a prop so it stays server-rendered.
 function SponsorButton({
   proposal,
   sponsorCost,
+  walletAddress,
   onSponsored,
 }: {
   proposal: Proposal
   sponsorCost: number | null
+  walletAddress: string
   onSponsored: (id: number) => void
 }) {
-  const [state, setState] = useState<'idle' | 'confirm' | 'loading' | 'error'>('idle')
+  const [state, setState] = useState<
+    'idle' | 'instructions' | 'awaiting_tx' | 'loading' | 'error'
+  >('idle')
+  const [txHash, setTxHash] = useState('')
   const [errorMsg, setErrorMsg] = useState('')
 
-  const handleClick = useCallback(
-    (e: React.MouseEvent) => {
-      e.preventDefault()
-      e.stopPropagation()
-      if (state === 'idle') {
-        setState('confirm')
-      } else if (state === 'confirm') {
-        setState('loading')
-        fetch('/api/proposals/sponsor', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ id: proposal.id }),
-        })
-          .then(async (res) => {
-            if (!res.ok) {
-              const j = (await res.json().catch(() => null)) as { error?: string } | null
-              throw new Error(j?.error ?? `HTTP ${res.status}`)
-            }
-            onSponsored(proposal.id)
-          })
-          .catch((err) => {
-            setErrorMsg(err instanceof Error ? err.message : 'error')
-            setState('error')
-          })
-      }
-    },
-    [state, proposal.id, onSponsored]
-  )
-
-  const handleCancel = useCallback((e: React.MouseEvent) => {
+  const stop = (e: React.MouseEvent) => {
     e.preventDefault()
     e.stopPropagation()
+  }
+
+  const reset = useCallback((e: React.MouseEvent) => {
+    stop(e)
     setState('idle')
     setErrorMsg('')
+    setTxHash('')
   }, [])
+
+  const handleOpen = useCallback(
+    (e: React.MouseEvent) => {
+      stop(e)
+      setState('instructions')
+    },
+    []
+  )
+
+  const handleContinue = useCallback(
+    (e: React.MouseEvent) => {
+      stop(e)
+      setState('awaiting_tx')
+    },
+    []
+  )
+
+  const handleSubmit = useCallback(
+    (e: React.MouseEvent) => {
+      stop(e)
+      if (!txHash.trim()) return
+      setState('loading')
+      fetch('/api/proposals/sponsor', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: proposal.id, txHash: txHash.trim() }),
+      })
+        .then(async (res) => {
+          if (!res.ok) {
+            const j = (await res.json().catch(() => null)) as { error?: string } | null
+            throw new Error(j?.error ?? `HTTP ${res.status}`)
+          }
+          onSponsored(proposal.id)
+        })
+        .catch((err) => {
+          setErrorMsg(err instanceof Error ? err.message : 'error')
+          setState('error')
+        })
+    },
+    [txHash, proposal.id, onSponsored]
+  )
 
   if (proposal.sponsored) return null
 
-  const costLabel =
-    sponsorCost !== null ? `${sponsorCost.toFixed(2)} USDC` : '10% of treasury'
+  const costLabel = sponsorCost !== null ? `${sponsorCost.toFixed(2)} USDC` : '~10% of treasury'
 
   if (state === 'error') {
     return (
-      <span className="flex items-center gap-1 text-[0.65rem] text-muted">
+      <span
+        className="flex items-center gap-1 text-[0.65rem] text-muted"
+        onClick={stop}
+      >
         <span className="text-red-400">{errorMsg}</span>
-        <button
-          onClick={handleCancel}
-          className="underline hover:text-fg"
-        >
+        <button onClick={reset} className="underline hover:text-fg">
           dismiss
         </button>
       </span>
@@ -107,34 +130,84 @@ function SponsorButton({
 
   if (state === 'loading') {
     return (
-      <span className="text-[0.65rem] text-muted animate-pulse">sponsoring…</span>
+      <span className="text-[0.65rem] text-muted animate-pulse" onClick={stop}>
+        verifying…
+      </span>
     )
   }
 
-  if (state === 'confirm') {
+  if (state === 'instructions') {
     return (
-      <span className="flex items-center gap-1 text-[0.65rem]">
-        <span className="text-muted">Boost for {costLabel}?</span>
-        <button
-          onClick={handleClick}
-          className="text-fg underline hover:no-underline font-semibold"
-        >
-          confirm
-        </button>
-        <button
-          onClick={handleCancel}
-          className="text-muted underline hover:text-fg"
-        >
-          cancel
-        </button>
+      <span
+        className="flex flex-col gap-1 text-[0.65rem] bg-bg border border-fg p-2 max-w-xs"
+        onClick={stop}
+      >
+        <span className="font-semibold text-fg">Sponsor this proposal</span>
+        <span className="text-muted">
+          Send{' '}
+          <span className="font-semibold text-fg">{costLabel}</span>
+          {' '}USDC on{' '}
+          <span className="font-semibold text-fg">Base</span>
+          {' '}to:
+        </span>
+        <span className="font-mono text-[0.6rem] break-all text-fg select-all">
+          {walletAddress}
+        </span>
+        <span className="text-muted text-[0.6rem]">
+          Use any wallet (MetaMask, Coinbase Wallet, etc.). After the tx
+          confirms, click Continue and paste your transaction hash.
+        </span>
+        <span className="flex gap-2 mt-1">
+          <button
+            onClick={handleContinue}
+            className="text-fg underline hover:no-underline font-semibold"
+          >
+            I sent it →
+          </button>
+          <button onClick={reset} className="text-muted underline hover:text-fg">
+            cancel
+          </button>
+        </span>
+      </span>
+    )
+  }
+
+  if (state === 'awaiting_tx') {
+    return (
+      <span
+        className="flex flex-col gap-1 text-[0.65rem] bg-bg border border-fg p-2 max-w-xs"
+        onClick={stop}
+      >
+        <span className="text-muted">Paste your Base transaction hash:</span>
+        <input
+          type="text"
+          value={txHash}
+          onChange={(e) => setTxHash(e.target.value)}
+          placeholder="0x…"
+          className="font-mono text-[0.6rem] bg-bg border border-muted px-1 py-0.5 text-fg w-full outline-none focus:border-fg"
+          onClick={(e) => e.stopPropagation()}
+          autoFocus
+        />
+        <span className="flex gap-2">
+          <button
+            onClick={handleSubmit}
+            disabled={!txHash.trim()}
+            className="text-fg underline hover:no-underline font-semibold disabled:opacity-40"
+          >
+            verify &amp; sponsor
+          </button>
+          <button onClick={reset} className="text-muted underline hover:text-fg">
+            cancel
+          </button>
+        </span>
       </span>
     )
   }
 
   return (
     <button
-      onClick={handleClick}
-      title={`Sponsor this proposal (${costLabel}) to boost it to the top`}
+      onClick={handleOpen}
+      title={`Sponsor this proposal (${costLabel}) to boost it to the top — requires a USDC payment on Base`}
       className="text-[0.65rem] text-muted border border-muted px-[0.5rem] py-[0.2rem] hover:border-fg hover:text-fg leading-tight shrink-0"
     >
       ★ sponsor
@@ -145,9 +218,11 @@ function SponsorButton({
 export default function ProposalFeed({
   proposals: initialProposals,
   sponsorCost,
+  walletAddress,
 }: {
   proposals: Proposal[]
   sponsorCost: number | null
+  walletAddress: string
 }) {
   const [proposals, setProposals] = useState<Proposal[]>(initialProposals)
 
@@ -194,10 +269,11 @@ export default function ProposalFeed({
                 <span className="text-[0.72rem] text-muted group-hover:text-bg">
                   {fmt(p.created_at)}
                 </span>
-                <span onClick={(e) => e.stopPropagation()} className="group-hover:hidden">
+                <span onClick={(e) => e.stopPropagation()}>
                   <SponsorButton
                     proposal={p}
                     sponsorCost={sponsorCost}
+                    walletAddress={walletAddress}
                     onSponsored={handleSponsored}
                   />
                 </span>
