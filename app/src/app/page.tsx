@@ -1,6 +1,7 @@
 import Header from '@/components/Header'
 import ProposeForm from '@/components/ProposeForm'
 import ProposalFeed from '@/components/ProposalFeed'
+import Chat from '@/components/Chat'
 import { listProposals } from '@/lib/github'
 import { getUsdcBalance } from '@/lib/treasury'
 
@@ -48,6 +49,7 @@ export default async function Home() {
 
         <ProposeForm />
         <ProposalFeed proposals={proposals} />
+        <Chat />
       </main>
     </>
   )
