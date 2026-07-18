@@ -2,6 +2,7 @@
 
 import { useState, useCallback } from 'react'
 import type { Proposal } from '@/lib/types'
+import { estimateComplexity, TIER_TITLES, type ComplexityTier } from '@/lib/complexity'
 
 function fmt(d: string): string {
   const dt = new Date(d)
@@ -11,6 +12,24 @@ function fmt(d: string): string {
 }
 
 // Sponsored proposals float to the top; then most votes; then newest.
+const TIER_COLORS: Record<ComplexityTier, string> = {
+  cheap: 'bg-emerald-700 text-white',
+  standard: 'bg-blue-700 text-white',
+  complex: 'bg-purple-700 text-white',
+}
+
+function ComplexityBadge({ text }: { text: string }) {
+  const tier = estimateComplexity(text)
+  return (
+    <span
+      title={TIER_TITLES[tier]}
+      className={`inline-block text-[0.55rem] font-bold tracking-wider uppercase px-[0.4rem] py-[0.15rem] leading-tight shrink-0 ${TIER_COLORS[tier]}`}
+    >
+      {tier}
+    </span>
+  )
+}
+
 function sortProposals(proposals: Proposal[]): Proposal[] {
   return [...proposals].sort((a, b) => {
     if (a.sponsored && !b.sponsored) return -1
@@ -169,6 +188,7 @@ export default function ProposalFeed({
                     sponsored
                   </span>
                 )}
+                <ComplexityBadge text={p.text} />
               </span>
               <span className="flex items-center gap-3 flex-wrap">
                 <span className="text-[0.72rem] text-muted group-hover:text-bg">

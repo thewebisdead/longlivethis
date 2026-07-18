@@ -1,3 +1,5 @@
+import type { ComplexityTier } from './complexity'
+
 export interface Proposal {
   /** GitHub issue number */
   id: number
@@ -9,4 +11,9 @@ export interface Proposal {
   created_at: string
   /** Whether the proposal has been sponsored (boosted in ranking) */
   sponsored?: boolean
+  /**
+   * Estimated implementation cost tier for the agent.
+   * Derived client-side from the proposal text — not stored in GitHub.
+   */
+  complexity?: ComplexityTier
 }
