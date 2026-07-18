@@ -115,7 +115,7 @@ export async function POST(req: Request) {
     // Verify the on-chain payment before applying the boost.
     const amount = await verifyUsdcTransfer(txHash, cost)
 
-    await sponsorProposal(id, amount)
+    await sponsorProposal(id, amount, txHash)
     return NextResponse.json({ ok: true, cost, amount })
   } catch (err) {
     console.error('sponsor POST failed:', err)

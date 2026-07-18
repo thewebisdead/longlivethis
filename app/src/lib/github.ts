@@ -47,6 +47,29 @@ const caches = ((globalThis as Record<string, unknown>).__longliveGh ??= {
 export const SPONSORED_LABEL = 'boosted'
 /** Pattern stored in issue body to track cumulative boost amount */
 const BOOST_TOTAL_RE = /<!--\s*boost_total:\s*([0-9]+(?:\.[0-9]+)?)\s*-->/
+/** Pattern stored in issue body to record all used tx hashes (newline-separated inside the comment) */
+const USED_TX_RE = /<!--\s*used_tx:([\s\S]*?)-->/
+
+/** Parse the set of already-used tx hashes from an issue body. Pure. */
+export function parseUsedTxHashes(body: string | null | undefined): Set<string> {
+  if (!body) return new Set()
+  const m = body.match(USED_TX_RE)
+  if (!m) return new Set()
+  return new Set(m[1].split('\n').map((s) => s.trim().toLowerCase()).filter(Boolean))
+}
+
+/** Produce updated body with the tx hash appended to the used-tx list. Pure. */
+export function addUsedTxHash(body: string | null | undefined, txHash: string): string {
+  const existing = parseUsedTxHashes(body)
+  existing.add(txHash.toLowerCase())
+  const list = Array.from(existing).join('\n')
+  const comment = `<!-- used_tx:\n${list}\n-->`
+  const base = body ?? ''
+  if (USED_TX_RE.test(base)) {
+    return base.replace(USED_TX_RE, comment)
+  }
+  return `${base.trimEnd()}\n${comment}`
+}
 
 export interface GhIssue {
   number: number
@@ -84,7 +107,7 @@ export function mapIssue(issue: GhIssue): Proposal {
   const boostTotal = parseBoostTotal(issue.body)
   return {
     id: issue.number,
-    text: (issue.body?.replace(BOOST_TOTAL_RE, '').trim()) || issue.title,
+    text: (issue.body?.replace(BOOST_TOTAL_RE, '').replace(USED_TX_RE, '').trim()) || issue.title,
     votes: (r?.['+1'] ?? 0) - (r?.['-1'] ?? 0),
     url: issue.html_url,
     created_at: issue.created_at,
@@ -234,17 +257,46 @@ async function ensureSponsoredLabel(): Promise<void> {
  * Add the "boosted" label to the given issue and record the cumulative boost
  * total in the issue body. Supports repeated boosts — each call adds to the
  * running total.
+ * txHash is required to prevent replay attacks (same tx used multiple times).
  */
-export async function sponsorProposal(issueNumber: number, amount: number): Promise<void> {
+export async function sponsorProposal(issueNumber: number, amount: number, txHash: string): Promise<void> {
   await ensureSponsoredLabel()
 
   // Fetch the current issue body to read/update the running boost total.
   const issueRes = await gh(`/repos/${REPO}/issues/${issueNumber}`)
   if (!issueRes.ok) throw new Error(`GitHub get issue failed: ${issueRes.status}`)
   const issue = (await issueRes.json()) as GhIssue
+
+  // Reject if this tx hash was already used on this proposal.
+  const usedHere = parseUsedTxHashes(issue.body)
+  if (usedHere.has(txHash.toLowerCase())) {
+    throw new Error('transaction hash has already been used to boost this proposal')
+  }
+
+  // Also reject if this tx hash was used on any other proposal (cross-proposal replay).
+  const allProposals = await listProposals()
+  for (const proposal of allProposals) {
+    if (proposal.id === issueNumber) continue
+    // We need the full issue body for each proposal; listProposals caches bodies.
+    // Re-fetch from cache is fine — in the worst case we miss a very recent boost
+    // on another issue, but the per-issue check above is the strong guard.
+    // For cross-proposal protection we search the cached data which includes body
+    // stored in the used_tx comment indirectly. But listProposals only returns
+    // Proposal objects without raw bodies. We'll fetch the raw issue to be sure.
+    const otherRes = await gh(`/repos/${REPO}/issues/${proposal.id}`)
+    if (!otherRes.ok) continue
+    const otherIssue = (await otherRes.json()) as GhIssue
+    const usedThere = parseUsedTxHashes(otherIssue.body)
+    if (usedThere.has(txHash.toLowerCase())) {
+      throw new Error('transaction hash has already been used to boost another proposal')
+    }
+  }
+
   const prevTotal = parseBoostTotal(issue.body)
   const newTotal = prevTotal + amount
-  const newBody = setBoostTotal(issue.body, newTotal)
+  // Update body: set new boost total AND record the used tx hash.
+  let newBody = setBoostTotal(issue.body, newTotal)
+  newBody = addUsedTxHash(newBody, txHash)
 
   // Update the issue body with the new total.
   const patchRes = await gh(`/repos/${REPO}/issues/${issueNumber}`, {
