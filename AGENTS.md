@@ -34,6 +34,53 @@ The frozen `select-proposal` step does this automatically — you don't:
 
 The feature branch is already created and checked out for you.
 
+**Step 0 — Complexity assessment (do this first, before any code):**
+
+1. Read the proposal carefully and classify it into one of three tiers:
+   - **cheap**: pure UI tweaks, text/label/color changes, tiny config adjustments
+     (≤ ~15 lines changed, no new logic, no new files except tests)
+   - **standard**: new React components, moderate logic additions, API wiring,
+     small new features with clear scope (default tier)
+   - **complex**: multi-file architecture changes, new infra services, security-
+     sensitive code, anything requiring research or multi-step design
+
+2. Based on the tier, **switch to the appropriate model** by updating
+   `.pi-agent/models.json` with the right model id before doing any work.
+   Use the cheapest model that can reliably implement the feature:
+
+   - **cheap tier** → `anthropic/claude-haiku-3-5` (fast, cheap, great for
+     straightforward tasks)
+   - **standard tier** → `anthropic/claude-sonnet-4.6` (default; balanced cost
+     and capability)
+   - **complex tier** → keep `anthropic/claude-sonnet-4.6` as the main model;
+     spawn subagents (using the Pi SDK or bash subprocesses) for well-isolated
+     sub-tasks such as research, test generation, or documentation writing.
+
+   To switch models, overwrite `.pi-agent/models.json` to include all needed
+   model entries under the `x402gate` provider (same `baseUrl`, same `apiKey
+   "x402"`, same cost zeros — the proxy handles billing). Then use `/model`
+   (in interactive mode) or `--model <id>` flag if spawning sub-processes.
+
+   Example for a cheap-tier run — prepend this bash snippet before editing:
+   ```bash
+   PROXY_BASE="$(cat /tmp/pi-proxy-port.json 2>/dev/null | jq -r .baseUrl || echo $PROXY_BASE)"
+   jq '.providers.x402gate.models[0].id = "anthropic/claude-haiku-3-5" |
+       .providers.x402gate.models[0].name = "anthropic/claude-haiku-3-5"' \
+     .pi-agent/models.json > /tmp/m.json && mv /tmp/m.json .pi-agent/models.json
+   ```
+   (Note: model switching only takes effect on the **next** Pi session start;
+   within a running session you can use `/model` to switch interactively.)
+
+3. For **complex** proposals, expand the proposal into a concrete task list
+   before coding. Write 3–8 discrete, testable sub-tasks. Tackle each in order;
+   use separate bash sub-processes for well-isolated research tasks where a
+   cheaper model would suffice (e.g., `pi --model anthropic/claude-haiku-3-5
+   --provider x402gate --api-key x402 --no-session --mode text
+   "Research: what npm packages exist for X?"`). Synthesize the results yourself
+   rather than trusting sub-agent output blindly.
+
+**Step 1–4 (unchanged after the assessment above):**
+
 1. Implement the allowed feature. Keep it minimal — one feature, one branch.
 2. Adjust or add tests. Do not break existing tests.
 3. Run `./scripts/preflight.sh` (receive-only check + build + tests + smoke).
