@@ -50,34 +50,52 @@ The feature branch is already created and checked out for you.
 
    - **cheap tier** → `anthropic/claude-haiku-3-5` (fast, cheap, great for
      straightforward tasks)
-   - **standard tier** → `anthropic/claude-sonnet-4.6` (default; balanced cost
-     and capability)
+   - **standard tier** → `deepseek/deepseek-prover-v2` (cost-efficient;
+     strong code reasoning; use this as the default implementation model)
    - **complex tier** → keep `anthropic/claude-sonnet-4.6` as the main model;
-     spawn subagents (using the Pi SDK or bash subprocesses) for well-isolated
-     sub-tasks such as research, test generation, or documentation writing.
+     spawn a DeepSeek V4 Pro subagent (`deepseek/deepseek-prover-v2`) for the
+     actual code-writing sub-tasks (research, scaffolding, test generation);
+     synthesize results yourself.
 
    To switch models, overwrite `.pi-agent/models.json` to include all needed
    model entries under the `x402gate` provider (same `baseUrl`, same `apiKey
    "x402"`, same cost zeros — the proxy handles billing). Then use `/model`
    (in interactive mode) or `--model <id>` flag if spawning sub-processes.
 
-   Example for a cheap-tier run — prepend this bash snippet before editing:
+   **Always register both the primary model and DeepSeek** so subagent calls
+   resolve. Run this snippet at the very start of every Phase 2 run:
    ```bash
    PROXY_BASE="$(cat /tmp/pi-proxy-port.json 2>/dev/null | jq -r .baseUrl || echo $PROXY_BASE)"
-   jq '.providers.x402gate.models[0].id = "anthropic/claude-haiku-3-5" |
-       .providers.x402gate.models[0].name = "anthropic/claude-haiku-3-5"' \
-     .pi-agent/models.json > /tmp/m.json && mv /tmp/m.json .pi-agent/models.json
+   # Add DeepSeek V4 Pro as a second registered model for subagent use
+   jq --arg base "$PROXY_BASE" '
+     .providers.x402gate.models += [{
+       id: "deepseek/deepseek-prover-v2",
+       name: "deepseek/deepseek-prover-v2",
+       reasoning: false,
+       input: ["text"],
+       contextWindow: 128000,
+       maxTokens: 16384,
+       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+     }]' .pi-agent/models.json > /tmp/m.json && mv /tmp/m.json .pi-agent/models.json
+   ```
+   Then spawn implementation subagents with:
+   ```bash
+   pi --model deepseek/deepseek-prover-v2 --provider x402gate --api-key x402 \
+      --no-session --mode text "Implement: <task description>"
    ```
    (Note: model switching only takes effect on the **next** Pi session start;
    within a running session you can use `/model` to switch interactively.)
 
 3. For **complex** proposals, expand the proposal into a concrete task list
    before coding. Write 3–8 discrete, testable sub-tasks. Tackle each in order;
-   use separate bash sub-processes for well-isolated research tasks where a
-   cheaper model would suffice (e.g., `pi --model anthropic/claude-haiku-3-5
-   --provider x402gate --api-key x402 --no-session --mode text
-   "Research: what npm packages exist for X?"`). Synthesize the results yourself
-   rather than trusting sub-agent output blindly.
+   use DeepSeek V4 Pro subagent bash sub-processes for the actual code-writing
+   tasks (it is significantly cheaper than Sonnet, saving treasury funds for
+   more proposals). Example:
+   ```bash
+   pi --model deepseek/deepseek-prover-v2 --provider x402gate --api-key x402 \
+      --no-session --mode text "Research: what npm packages exist for X?"
+   ```
+   Synthesize the results yourself rather than trusting sub-agent output blindly.
 
 **Step 1–4 (unchanged after the assessment above):**
 
