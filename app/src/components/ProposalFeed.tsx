@@ -11,12 +11,14 @@ function fmt(d: string): string {
   return `${dd}.${mm}.${dt.getFullYear()}`
 }
 
-// Sponsored proposals float to the top; then most votes; then newest.
 const TIER_COLORS: Record<ComplexityTier, string> = {
   cheap: 'bg-emerald-700 text-white',
   standard: 'bg-blue-700 text-white',
   complex: 'bg-purple-700 text-white',
 }
+
+/** Total boost threshold (USDC) for the hot badge. */
+const HOT_BOOST_THRESHOLD = 10
 
 function ComplexityBadge({ text }: { text: string }) {
   const tier = estimateComplexity(text)
@@ -32,24 +34,24 @@ function ComplexityBadge({ text }: { text: string }) {
 
 function sortProposals(proposals: Proposal[]): Proposal[] {
   return [...proposals].sort((a, b) => {
-    if (a.sponsored && !b.sponsored) return -1
-    if (!a.sponsored && b.sponsored) return 1
+    const aBoost = a.boostTotal ?? 0
+    const bBoost = b.boostTotal ?? 0
+    // Boosted proposals float to the top (higher boost total = higher rank).
+    if (aBoost !== bBoost) return bBoost - aBoost
     return b.votes - a.votes || +new Date(b.created_at) - +new Date(a.created_at)
   })
 }
 
-// USDC on Base wallet address passed via env (set at runtime via WALLET_ADDRESS).
-// The component receives it as a prop so it stays server-rendered.
-function SponsorButton({
+function BoostButton({
   proposal,
-  sponsorCost,
+  boostCost,
   walletAddress,
-  onSponsored,
+  onBoosted,
 }: {
   proposal: Proposal
-  sponsorCost: number | null
+  boostCost: number | null
   walletAddress: string
-  onSponsored: (id: number) => void
+  onBoosted: (id: number, amount: number) => void
 }) {
   const [state, setState] = useState<
     'idle' | 'instructions' | 'awaiting_tx' | 'loading' | 'error'
@@ -69,21 +71,15 @@ function SponsorButton({
     setTxHash('')
   }, [])
 
-  const handleOpen = useCallback(
-    (e: React.MouseEvent) => {
-      stop(e)
-      setState('instructions')
-    },
-    []
-  )
+  const handleOpen = useCallback((e: React.MouseEvent) => {
+    stop(e)
+    setState('instructions')
+  }, [])
 
-  const handleContinue = useCallback(
-    (e: React.MouseEvent) => {
-      stop(e)
-      setState('awaiting_tx')
-    },
-    []
-  )
+  const handleContinue = useCallback((e: React.MouseEvent) => {
+    stop(e)
+    setState('awaiting_tx')
+  }, [])
 
   const handleSubmit = useCallback(
     (e: React.MouseEvent) => {
@@ -100,26 +96,22 @@ function SponsorButton({
             const j = (await res.json().catch(() => null)) as { error?: string } | null
             throw new Error(j?.error ?? `HTTP ${res.status}`)
           }
-          onSponsored(proposal.id)
+          const data = (await res.json()) as { amount?: number }
+          onBoosted(proposal.id, data.amount ?? boostCost ?? 0)
         })
         .catch((err) => {
           setErrorMsg(err instanceof Error ? err.message : 'error')
           setState('error')
         })
     },
-    [txHash, proposal.id, onSponsored]
+    [txHash, proposal.id, onBoosted, boostCost]
   )
 
-  if (proposal.sponsored) return null
-
-  const costLabel = sponsorCost !== null ? `${sponsorCost.toFixed(2)} USDC` : '~10% of treasury'
+  const costLabel = boostCost !== null ? `${boostCost.toFixed(2)} USDC` : '~10% of treasury'
 
   if (state === 'error') {
     return (
-      <span
-        className="flex items-center gap-1 text-[0.65rem] text-muted"
-        onClick={stop}
-      >
+      <span className="flex items-center gap-1 text-[0.65rem] text-muted" onClick={stop}>
         <span className="text-red-400">{errorMsg}</span>
         <button onClick={reset} className="underline hover:text-fg">
           dismiss
@@ -142,7 +134,7 @@ function SponsorButton({
         className="flex flex-col gap-1 text-[0.65rem] bg-bg border border-fg p-2 max-w-xs"
         onClick={stop}
       >
-        <span className="font-semibold text-fg">Sponsor this proposal</span>
+        <span className="font-semibold text-fg">Boost this proposal</span>
         <span className="text-muted">
           Send{' '}
           <span className="font-semibold text-fg">{costLabel}</span>
@@ -156,6 +148,7 @@ function SponsorButton({
         <span className="text-muted text-[0.6rem]">
           Use any wallet (MetaMask, Coinbase Wallet, etc.). After the tx
           confirms, click Continue and paste your transaction hash.
+          Proposals boosted above $10 total get a special badge and highlight.
         </span>
         <span className="flex gap-2 mt-1">
           <button
@@ -194,7 +187,7 @@ function SponsorButton({
             disabled={!txHash.trim()}
             className="text-fg underline hover:no-underline font-semibold disabled:opacity-40"
           >
-            verify &amp; sponsor
+            verify &amp; boost
           </button>
           <button onClick={reset} className="text-muted underline hover:text-fg">
             cancel
@@ -207,10 +200,10 @@ function SponsorButton({
   return (
     <button
       onClick={handleOpen}
-      title={`Sponsor this proposal (${costLabel}) to boost it to the top — requires a USDC payment on Base`}
+      title={`Boost this proposal (${costLabel}) to move it to the top — requires a USDC payment on Base. Proposals boosted above $10 total get a special badge.`}
       className="text-[0.65rem] text-muted border border-muted px-[0.5rem] py-[0.2rem] hover:border-fg hover:text-fg leading-tight shrink-0"
     >
-      ★ sponsor
+      ⚡ boost
     </button>
   )
 }
@@ -226,8 +219,14 @@ export default function ProposalFeed({
 }) {
   const [proposals, setProposals] = useState<Proposal[]>(initialProposals)
 
-  const handleSponsored = useCallback((id: number) => {
-    setProposals((prev) => prev.map((p) => (p.id === id ? { ...p, sponsored: true } : p)))
+  const handleBoosted = useCallback((id: number, amount: number) => {
+    setProposals((prev) =>
+      prev.map((p) => {
+        if (p.id !== id) return p
+        const newTotal = (p.boostTotal ?? 0) + amount
+        return { ...p, boosted: true, boostTotal: newTotal }
+      })
+    )
   }, [])
 
   const rows = sortProposals(proposals)
@@ -237,50 +236,60 @@ export default function ProposalFeed({
       <h2 className="text-[0.8rem] tracking-widest text-muted uppercase mt-8 mb-4">Proposals</h2>
       <p className="text-[0.72rem] text-muted mb-4">
         Click to open a proposal on GitHub, react with 👍 to vote for it or 👎 to vote against.
-        Sponsor a proposal to boost it to the top of the feed.
+        Boost a proposal to move it to the top of the feed. Proposals boosted above $10 total get
+        a special badge.
       </p>
 
       {rows.length === 0 ? (
         <p className="text-muted text-[0.85rem]">Nothing to implement yet :( Propose something!</p>
       ) : (
-        rows.map((p) => (
-          <a
-            key={p.id}
-            href={p.url}
-            target="_blank"
-            rel="noopener"
-            title="React on GitHub to vote"
-            className="no-underline text-fg border-t border-fg last:border-b py-4 flex gap-4 items-start hover:bg-fg hover:text-bg group"
-          >
-            <span className="inline-block border border-fg font-mono text-[0.75rem] px-[0.6rem] py-[0.4rem] min-w-[3rem] text-center shrink-0 group-hover:border-bg">
-              ▲ {p.votes}
-            </span>
-            <span className="flex-1 min-w-0">
-              <span className="flex items-center gap-2 flex-wrap mb-1">
-                <span className="text-[0.9rem] leading-normal">{p.text}</span>
-                {p.sponsored && (
-                  <span className="inline-block text-[0.6rem] font-bold tracking-wider uppercase bg-yellow-400 text-black px-[0.4rem] py-[0.15rem] leading-tight shrink-0">
-                    sponsored
+        rows.map((p) => {
+          const boostTotal = p.boostTotal ?? 0
+          const isHot = boostTotal >= HOT_BOOST_THRESHOLD
+          return (
+            <a
+              key={p.id}
+              href={p.url}
+              target="_blank"
+              rel="noopener"
+              title="React on GitHub to vote"
+              className={`no-underline text-fg border-t border-fg last:border-b py-4 flex gap-4 items-start hover:bg-fg hover:text-bg group${isHot ? ' bg-yellow-950 border-yellow-500' : ''}`}
+            >
+              <span className="inline-block border border-fg font-mono text-[0.75rem] px-[0.6rem] py-[0.4rem] min-w-[3rem] text-center shrink-0 group-hover:border-bg">
+                ▲ {p.votes}
+              </span>
+              <span className="flex-1 min-w-0">
+                <span className="flex items-center gap-2 flex-wrap mb-1">
+                  <span className="text-[0.9rem] leading-normal">{p.text}</span>
+                  {isHot && (
+                    <span className="inline-block text-[0.6rem] font-bold tracking-wider uppercase bg-yellow-400 text-black px-[0.4rem] py-[0.15rem] leading-tight shrink-0">
+                      🔥 boosted ${boostTotal.toFixed(2)}
+                    </span>
+                  )}
+                  {p.boosted && !isHot && (
+                    <span className="inline-block text-[0.6rem] font-bold tracking-wider uppercase bg-yellow-700 text-white px-[0.4rem] py-[0.15rem] leading-tight shrink-0">
+                      ⚡ boosted
+                    </span>
+                  )}
+                  <ComplexityBadge text={p.text} />
+                </span>
+                <span className="flex items-center gap-3 flex-wrap">
+                  <span className="text-[0.72rem] text-muted group-hover:text-bg">
+                    {fmt(p.created_at)}
                   </span>
-                )}
-                <ComplexityBadge text={p.text} />
-              </span>
-              <span className="flex items-center gap-3 flex-wrap">
-                <span className="text-[0.72rem] text-muted group-hover:text-bg">
-                  {fmt(p.created_at)}
-                </span>
-                <span onClick={(e) => e.stopPropagation()}>
-                  <SponsorButton
-                    proposal={p}
-                    sponsorCost={sponsorCost}
-                    walletAddress={walletAddress}
-                    onSponsored={handleSponsored}
-                  />
+                  <span onClick={(e) => e.stopPropagation()}>
+                    <BoostButton
+                      proposal={p}
+                      boostCost={sponsorCost}
+                      walletAddress={walletAddress}
+                      onBoosted={handleBoosted}
+                    />
+                  </span>
                 </span>
               </span>
-            </span>
-          </a>
-        ))
+            </a>
+          )
+        })
       )}
     </div>
   )

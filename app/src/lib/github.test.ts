@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 // .ts extension: `node --test` runs this file directly (type stripping).
-import { mapIssue, normalizeText, issueTitle, type GhIssue } from './github.ts'
+import { mapIssue, normalizeText, issueTitle, parseBoostTotal, setBoostTotal, type GhIssue } from './github.ts'
 
 const base: GhIssue = {
   number: 7,
@@ -19,7 +19,8 @@ test('mapIssue maps an open issue to a proposal', () => {
     votes: 4,
     url: 'https://github.com/o/r/issues/7',
     created_at: '2026-07-16T00:00:00Z',
-    sponsored: false,
+    boosted: false,
+    boostTotal: 0,
   })
 })
 
@@ -32,11 +33,33 @@ test('mapIssue defaults votes to 0 when reactions are missing', () => {
   assert.equal(mapIssue({ ...base, reactions: undefined }).votes, 0)
 })
 
-test('mapIssue marks sponsored when the label is present', () => {
-  assert.equal(mapIssue({ ...base, labels: [{ name: 'sponsored' }] }).sponsored, true)
-  assert.equal(mapIssue({ ...base, labels: [{ name: 'other' }] }).sponsored, false)
-  assert.equal(mapIssue({ ...base, labels: [] }).sponsored, false)
-  assert.equal(mapIssue({ ...base, labels: undefined }).sponsored, false)
+test('mapIssue marks boosted when the boosted label is present', () => {
+  assert.equal(mapIssue({ ...base, labels: [{ name: 'boosted' }] }).boosted, true)
+  assert.equal(mapIssue({ ...base, labels: [{ name: 'other' }] }).boosted, false)
+  assert.equal(mapIssue({ ...base, labels: [] }).boosted, false)
+  assert.equal(mapIssue({ ...base, labels: undefined }).boosted, false)
+})
+
+test('parseBoostTotal extracts total from issue body comment', () => {
+  assert.equal(parseBoostTotal('some text\n<!-- boost_total: 15.500000 -->'), 15.5)
+  assert.equal(parseBoostTotal('no comment here'), 0)
+  assert.equal(parseBoostTotal(null), 0)
+  assert.equal(parseBoostTotal(undefined), 0)
+})
+
+test('setBoostTotal inserts or updates the boost comment in the body', () => {
+  const body1 = setBoostTotal('Add a guestbook', 5)
+  assert.ok(body1.includes('<!-- boost_total: 5.000000 -->'))
+  const body2 = setBoostTotal(body1, 15)
+  assert.ok(body2.includes('<!-- boost_total: 15.000000 -->'))
+  // Ensure the old value is replaced (only one boost comment)
+  assert.equal((body2.match(/boost_total/g) ?? []).length, 1)
+})
+
+test('mapIssue strips boost comment from displayed text', () => {
+  const bodyWithBoost = 'Add a guestbook\n<!-- boost_total: 7.000000 -->'
+  assert.equal(mapIssue({ ...base, body: bodyWithBoost }).text, 'Add a guestbook')
+  assert.equal(mapIssue({ ...base, body: bodyWithBoost }).boostTotal, 7)
 })
 
 test('mapIssue counts only 👍 and 👎, ignoring other emojis', () => {

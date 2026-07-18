@@ -44,7 +44,9 @@ const caches = ((globalThis as Record<string, unknown>).__longliveGh ??= {
   login: null,
 }) as GhCaches
 
-export const SPONSORED_LABEL = 'sponsored'
+export const SPONSORED_LABEL = 'boosted'
+/** Pattern stored in issue body to track cumulative boost amount */
+const BOOST_TOTAL_RE = /<!--\s*boost_total:\s*([0-9]+(?:\.[0-9]+)?)\s*-->/
 
 export interface GhIssue {
   number: number
@@ -58,17 +60,36 @@ export interface GhIssue {
   labels?: Array<{ name: string }>
 }
 
+/** Parse cumulative boost total from an issue body HTML comment. Pure. */
+export function parseBoostTotal(body: string | null | undefined): number {
+  if (!body) return 0
+  const m = body.match(BOOST_TOTAL_RE)
+  return m ? parseFloat(m[1]) : 0
+}
+
+/** Produce updated body with new boost total stored in HTML comment. Pure. */
+export function setBoostTotal(body: string | null | undefined, total: number): string {
+  const comment = `<!-- boost_total: ${total.toFixed(6)} -->`
+  const existing = (body ?? '').match(BOOST_TOTAL_RE)
+  if (existing) {
+    return (body ?? '').replace(BOOST_TOTAL_RE, comment)
+  }
+  return `${(body ?? '').trimEnd()}\n${comment}`
+}
+
 /** Issue → Proposal. Pure — unit-tested without network. */
 export function mapIssue(issue: GhIssue): Proposal {
   // Net votes: 👍 minus 👎; every other emoji is ignored.
   const r = issue.reactions
+  const boostTotal = parseBoostTotal(issue.body)
   return {
     id: issue.number,
-    text: issue.body?.trim() || issue.title,
+    text: (issue.body?.replace(BOOST_TOTAL_RE, '').trim()) || issue.title,
     votes: (r?.['+1'] ?? 0) - (r?.['-1'] ?? 0),
     url: issue.html_url,
     created_at: issue.created_at,
-    sponsored: issue.labels?.some((l) => l.name === SPONSORED_LABEL) ?? false,
+    boosted: issue.labels?.some((l) => l.name === SPONSORED_LABEL) ?? false,
+    boostTotal,
   }
 }
 
@@ -195,13 +216,13 @@ export async function createProposal(text: string): Promise<Proposal> {
 }
 
 /**
- * Ensure the repo-level "sponsored" label exists (creates it if missing).
+ * Ensure the repo-level "boosted" label exists (creates it if missing).
  * Safe to call concurrently — GitHub 422 on duplicate is swallowed.
  */
 async function ensureSponsoredLabel(): Promise<void> {
   const res = await gh(`/repos/${REPO}/labels`, {
     method: 'POST',
-    body: JSON.stringify({ name: SPONSORED_LABEL, color: 'f9d71c', description: 'Sponsored proposal — boosted in ranking' }),
+    body: JSON.stringify({ name: SPONSORED_LABEL, color: 'f9d71c', description: 'Boosted proposal — floated to the top of the feed' }),
   })
   // 422 = already exists; both are fine
   if (!res.ok && res.status !== 422) {
@@ -210,24 +231,46 @@ async function ensureSponsoredLabel(): Promise<void> {
 }
 
 /**
- * Add the "sponsored" label to the given issue.
- * Updates the in-memory cache so the UI reflects it immediately.
+ * Add the "boosted" label to the given issue and record the cumulative boost
+ * total in the issue body. Supports repeated boosts — each call adds to the
+ * running total.
  */
-export async function sponsorProposal(issueNumber: number): Promise<void> {
+export async function sponsorProposal(issueNumber: number, amount: number): Promise<void> {
   await ensureSponsoredLabel()
-  const res = await gh(`/repos/${REPO}/issues/${issueNumber}/labels`, {
+
+  // Fetch the current issue body to read/update the running boost total.
+  const issueRes = await gh(`/repos/${REPO}/issues/${issueNumber}`)
+  if (!issueRes.ok) throw new Error(`GitHub get issue failed: ${issueRes.status}`)
+  const issue = (await issueRes.json()) as GhIssue
+  const prevTotal = parseBoostTotal(issue.body)
+  const newTotal = prevTotal + amount
+  const newBody = setBoostTotal(issue.body, newTotal)
+
+  // Update the issue body with the new total.
+  const patchRes = await gh(`/repos/${REPO}/issues/${issueNumber}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ body: newBody }),
+  })
+  if (!patchRes.ok) {
+    const detail = ((await patchRes.json().catch(() => null)) as { message?: string } | null)?.message
+    throw new Error(detail ? `GitHub: ${detail}` : `GitHub update issue failed: ${patchRes.status}`)
+  }
+
+  // Ensure the boosted label is applied (idempotent).
+  const labelRes = await gh(`/repos/${REPO}/issues/${issueNumber}/labels`, {
     method: 'POST',
     body: JSON.stringify({ labels: [SPONSORED_LABEL] }),
   })
-  if (!res.ok) {
-    const detail = ((await res.json().catch(() => null)) as { message?: string } | null)?.message
-    throw new Error(detail ? `GitHub: ${detail}` : `GitHub add label failed: ${res.status}`)
+  if (!labelRes.ok && labelRes.status !== 422) {
+    const detail = ((await labelRes.json().catch(() => null)) as { message?: string } | null)?.message
+    throw new Error(detail ? `GitHub: ${detail}` : `GitHub add label failed: ${labelRes.status}`)
   }
+
   // Update in-memory cache
   if (caches.list) {
     caches.list = {
       data: caches.list.data.map((p) =>
-        p.id === issueNumber ? { ...p, sponsored: true } : p
+        p.id === issueNumber ? { ...p, boosted: true, boostTotal: newTotal } : p
       ),
       ts: caches.list.ts,
     }
