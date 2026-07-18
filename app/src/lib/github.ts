@@ -44,6 +44,8 @@ const caches = ((globalThis as Record<string, unknown>).__longliveGh ??= {
   login: null,
 }) as GhCaches
 
+export const SPONSORED_LABEL = 'sponsored'
+
 export interface GhIssue {
   number: number
   title: string
@@ -53,6 +55,7 @@ export interface GhIssue {
   /** Present when the "issue" is actually a pull request — always skipped. */
   pull_request?: unknown
   reactions?: { '+1'?: number; '-1'?: number }
+  labels?: Array<{ name: string }>
 }
 
 /** Issue → Proposal. Pure — unit-tested without network. */
@@ -65,6 +68,7 @@ export function mapIssue(issue: GhIssue): Proposal {
     votes: (r?.['+1'] ?? 0) - (r?.['-1'] ?? 0),
     url: issue.html_url,
     created_at: issue.created_at,
+    sponsored: issue.labels?.some((l) => l.name === SPONSORED_LABEL) ?? false,
   }
 }
 
@@ -188,4 +192,44 @@ export async function createProposal(text: string): Promise<Proposal> {
   // instead of invalidating, so the feed shows it immediately.
   if (caches.list) caches.list = { data: [proposal, ...caches.list.data], ts: Date.now() }
   return proposal
+}
+
+/**
+ * Ensure the repo-level "sponsored" label exists (creates it if missing).
+ * Safe to call concurrently — GitHub 422 on duplicate is swallowed.
+ */
+async function ensureSponsoredLabel(): Promise<void> {
+  const res = await gh(`/repos/${REPO}/labels`, {
+    method: 'POST',
+    body: JSON.stringify({ name: SPONSORED_LABEL, color: 'f9d71c', description: 'Sponsored proposal — boosted in ranking' }),
+  })
+  // 422 = already exists; both are fine
+  if (!res.ok && res.status !== 422) {
+    throw new Error(`GitHub create label failed: ${res.status}`)
+  }
+}
+
+/**
+ * Add the "sponsored" label to the given issue.
+ * Updates the in-memory cache so the UI reflects it immediately.
+ */
+export async function sponsorProposal(issueNumber: number): Promise<void> {
+  await ensureSponsoredLabel()
+  const res = await gh(`/repos/${REPO}/issues/${issueNumber}/labels`, {
+    method: 'POST',
+    body: JSON.stringify({ labels: [SPONSORED_LABEL] }),
+  })
+  if (!res.ok) {
+    const detail = ((await res.json().catch(() => null)) as { message?: string } | null)?.message
+    throw new Error(detail ? `GitHub: ${detail}` : `GitHub add label failed: ${res.status}`)
+  }
+  // Update in-memory cache
+  if (caches.list) {
+    caches.list = {
+      data: caches.list.data.map((p) =>
+        p.id === issueNumber ? { ...p, sponsored: true } : p
+      ),
+      ts: caches.list.ts,
+    }
+  }
 }

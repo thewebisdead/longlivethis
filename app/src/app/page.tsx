@@ -48,7 +48,7 @@ export default async function Home() {
         </p>
 
         <ProposeForm />
-        <ProposalFeed proposals={proposals} />
+        <ProposalFeed proposals={proposals} sponsorCost={balance !== null ? Math.max(balance * 0.1, 0) : null} />
         <Chat />
       </main>
     </>
