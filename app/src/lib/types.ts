@@ -7,4 +7,6 @@ export interface Proposal {
   /** GitHub issue URL — where voting (reacting) happens */
   url: string
   created_at: string
+  /** Whether the proposal has been sponsored (boosted in ranking) */
+  sponsored?: boolean
 }

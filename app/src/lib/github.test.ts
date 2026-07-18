@@ -19,6 +19,7 @@ test('mapIssue maps an open issue to a proposal', () => {
     votes: 4,
     url: 'https://github.com/o/r/issues/7',
     created_at: '2026-07-16T00:00:00Z',
+    sponsored: false,
   })
 })
 
@@ -29,6 +30,13 @@ test('mapIssue falls back to the title when the body is empty', () => {
 
 test('mapIssue defaults votes to 0 when reactions are missing', () => {
   assert.equal(mapIssue({ ...base, reactions: undefined }).votes, 0)
+})
+
+test('mapIssue marks sponsored when the label is present', () => {
+  assert.equal(mapIssue({ ...base, labels: [{ name: 'sponsored' }] }).sponsored, true)
+  assert.equal(mapIssue({ ...base, labels: [{ name: 'other' }] }).sponsored, false)
+  assert.equal(mapIssue({ ...base, labels: [] }).sponsored, false)
+  assert.equal(mapIssue({ ...base, labels: undefined }).sponsored, false)
 })
 
 test('mapIssue counts only 👍 and 👎, ignoring other emojis', () => {
