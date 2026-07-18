@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 // .ts extension: `node --test` runs this file directly (type stripping).
-import { mapIssue, normalizeText, issueTitle, parseBoostTotal, setBoostTotal, type GhIssue } from './github.ts'
+import { mapIssue, normalizeText, issueTitle, parseBoostTotal, setBoostTotal, parseUsedTxHashes, addUsedTxHash, type GhIssue } from './github.ts'
 
 const base: GhIssue = {
   number: 7,
@@ -56,10 +56,60 @@ test('setBoostTotal inserts or updates the boost comment in the body', () => {
   assert.equal((body2.match(/boost_total/g) ?? []).length, 1)
 })
 
+test('parseUsedTxHashes returns empty set for missing comment', () => {
+  assert.equal(parseUsedTxHashes(null).size, 0)
+  assert.equal(parseUsedTxHashes(undefined).size, 0)
+  assert.equal(parseUsedTxHashes('no comment here').size, 0)
+})
+
+test('parseUsedTxHashes extracts hashes from used_tx comment', () => {
+  const hash1 = '0x' + 'a'.repeat(64)
+  const hash2 = '0x' + 'b'.repeat(64)
+  const body = `some text\n<!-- used_tx:\n${hash1}\n${hash2}\n-->`
+  const set = parseUsedTxHashes(body)
+  assert.equal(set.size, 2)
+  assert.ok(set.has(hash1))
+  assert.ok(set.has(hash2))
+})
+
+test('addUsedTxHash inserts a used_tx comment when none exists', () => {
+  const hash = '0x' + 'c'.repeat(64)
+  const body = addUsedTxHash('Add a guestbook', hash)
+  assert.ok(body.includes('used_tx:'))
+  assert.ok(body.includes(hash.toLowerCase()))
+  const set = parseUsedTxHashes(body)
+  assert.ok(set.has(hash.toLowerCase()))
+})
+
+test('addUsedTxHash accumulates multiple hashes across calls', () => {
+  const hash1 = '0x' + 'a'.repeat(64)
+  const hash2 = '0x' + 'b'.repeat(64)
+  const body1 = addUsedTxHash('proposal text', hash1)
+  const body2 = addUsedTxHash(body1, hash2)
+  const set = parseUsedTxHashes(body2)
+  assert.equal(set.size, 2)
+  assert.ok(set.has(hash1.toLowerCase()))
+  assert.ok(set.has(hash2.toLowerCase()))
+  // Only one used_tx comment block
+  assert.equal((body2.match(/used_tx/g) ?? []).length, 1)
+})
+
+test('addUsedTxHash is case-insensitive (stores lowercase)', () => {
+  const hash = '0xABCD' + 'a'.repeat(60)
+  const body = addUsedTxHash('text', hash)
+  assert.ok(parseUsedTxHashes(body).has(hash.toLowerCase()))
+})
+
 test('mapIssue strips boost comment from displayed text', () => {
   const bodyWithBoost = 'Add a guestbook\n<!-- boost_total: 7.000000 -->'
   assert.equal(mapIssue({ ...base, body: bodyWithBoost }).text, 'Add a guestbook')
   assert.equal(mapIssue({ ...base, body: bodyWithBoost }).boostTotal, 7)
+})
+
+test('mapIssue strips used_tx comment from displayed text', () => {
+  const hash = '0x' + 'a'.repeat(64)
+  const bodyWithTx = `Add a guestbook\n<!-- boost_total: 5.000000 -->\n<!-- used_tx:\n${hash}\n-->`
+  assert.equal(mapIssue({ ...base, body: bodyWithTx }).text, 'Add a guestbook')
 })
 
 test('mapIssue counts only 👍 and 👎, ignoring other emojis', () => {
