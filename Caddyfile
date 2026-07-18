@@ -1,0 +1,21 @@
+# Caddy config for the living app.
+# Requires Caddy built with github.com/mholt/caddy-ratelimit
+# (create-longlive deploy installs this via xcaddy + Go 1.22+).
+#
+# Limits (per client IP):
+#   POST /api/proposals → 1 / minute (each POST creates a GitHub issue)
+longlivethis.site {
+  rate_limit {
+    zone propose {
+      match {
+        method POST
+        path_regexp propose ^/api/proposals$
+      }
+      key    {remote_host}
+      events 1
+      window 1m
+    }
+  }
+  reverse_proxy localhost:3000
+  encode gzip
+}

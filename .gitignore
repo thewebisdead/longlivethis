@@ -1,0 +1,9 @@
+node_modules/
+.next/
+next-env.d.ts
+*.tsbuildinfo
+secrets.env
+*.env
+*.key
+.longlive-init-state.json
+.pi-agent/

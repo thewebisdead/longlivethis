@@ -1,0 +1,47 @@
+name: renew
+
+# Keep the x402Compute VPS alive by extending its prepaid window before expiry.
+# Pure API + payment (USDC on Base) — no SSH, no redeploy, no repo writes.
+# GitHub cron is best-effort/late; every 6h with a 12h threshold + 48h target
+# stays safe even if a couple of runs are skipped. Use workflow_dispatch to run now.
+on:
+  schedule:
+    - cron: "12 */6 * * *"
+  workflow_dispatch:
+
+# No repo access needed — this only calls the compute provider and pays.
+permissions:
+  contents: read
+
+# Never run two renewals at once (avoids double-extend / double-charge).
+concurrency:
+  group: renew-vps
+  cancel-in-progress: false
+
+jobs:
+  renew:
+    # Only ever run against main — same reasoning as agent.yml: dispatching a
+    # feature branch would run that branch's scripts/locked/renew-vps.mjs
+    # beside WALLET_PRIVATE_KEY, and branch contents aren't platform-locked
+    # (public repos can't have push rulesets).
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+
+      # Exact pins: these packages run with WALLET_PRIVATE_KEY in env.
+      - name: Install x402 deps
+        run: npm install --no-save --silent viem@2.55.2 @x402/fetch@2.18.0 @x402/evm@2.18.0 @x402/core@2.18.0
+
+      - name: Extend VPS if expiring
+        env:
+          WALLET_PRIVATE_KEY: ${{ secrets.WALLET_PRIVATE_KEY }}
+          X402_COMPUTE_INSTANCE_ID: ${{ secrets.X402_COMPUTE_INSTANCE_ID }}
+          RENEW_MIN_HOURS: ${{ vars.RENEW_MIN_HOURS }}
+          RENEW_TARGET_HOURS: ${{ vars.RENEW_TARGET_HOURS }}
+          RENEW_MAX_EXTENDS: ${{ vars.RENEW_MAX_EXTENDS }}
+        run: node scripts/locked/renew-vps.mjs

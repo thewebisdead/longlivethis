@@ -1,0 +1,58 @@
+name: test
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Frozen files unchanged (constitution + scripts/locked + workflows)
+        if: github.event_name == 'pull_request'
+        run: |
+          # Root of trust: run the BASE ref's copy of the check, not the PR's —
+          # a PR that tampers with check-frozen.sh is checked by the untampered
+          # version. (Humans change frozen files by pushing to main directly.)
+          base="origin/${{ github.base_ref }}"
+          git show "$base:scripts/locked/check-frozen.sh" | bash -s -- "$base"
+
+      - name: App must not contain spend secrets
+        run: |
+          chmod +x scripts/locked/check-receive-only.sh
+          ./scripts/locked/check-receive-only.sh
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: app/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: app
+
+      - name: Build
+        run: npm run build
+        working-directory: app
+
+      - name: Test
+        run: npm test
+        working-directory: app
+        env:
+          WALLET_ADDRESS: "0x0000000000000000000000000000000000000000"
+
+      # Ephemeral staging: boot the production Docker image against a stub
+      # GitHub API and verify the life-support endpoints (homepage, proposal
+      # intake, treasury, constitution). A PR that kills any of these cannot
+      # merge. No real issues are created — smoke.sh runs its own stub.
+      - name: Smoke — production image serves life-support endpoints
+        run: |
+          chmod +x scripts/locked/smoke.sh
+          ./scripts/locked/smoke.sh

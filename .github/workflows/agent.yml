@@ -1,0 +1,143 @@
+name: agent
+
+# Daily fallback sweep only (off-:00 — GitHub cron is best-effort and the
+# :00 slots are congested/skipped). Runs are otherwise event-driven: the app's
+# GitHub App credentials include actions:write, so app features may dispatch
+# this workflow on demand (e.g. "implement when a proposal reaches a 2/3
+# majority") — the base app ships with no such trigger.
+on:
+  schedule:
+    - cron: "23 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: read
+
+# Never run two agents at once (a dispatch during a running sweep would
+# otherwise pick the same proposal twice and open duplicate PRs — double
+# inference spend). A second trigger waits for the first
+# to finish rather than cancelling it mid-implementation.
+concurrency:
+  group: agent
+  cancel-in-progress: false
+
+jobs:
+  implement:
+    # Only ever run against main. workflow_dispatch accepts any ref, and since
+    # branch contents aren't platform-locked (public repos can't have push
+    # rulesets) the agent's contents:write token can put a modified
+    # scripts/locked/ on a feature branch — dispatching that branch would run
+    # tampered code beside WALLET_PRIVATE_KEY. This file is itself frozen and
+    # unpushable by the agent (no workflows permission), so the guard cannot
+    # be removed.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      # Authenticate as the GitHub App (created at init): pushes, PRs, and
+      # auto-merges run as <app-slug>[bot], so merges trigger deploy.yml
+      # (events from the Actions GITHUB_TOKEN are suppressed by GitHub).
+      - id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v5
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          # No credentials on disk: only the frozen deliver step pushes, using
+          # GH_TOKEN explicitly — code the agent runs cannot.
+          persist-credentials: false
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+
+      # Pinned exact version — this runs beside repo-write credentials, so no
+      # floating tags and no unscoped fallback names (squattable).
+      - name: Install Pi
+        run: npm install -g @earendil-works/pi-coding-agent@0.80.10
+
+      # The ONLY process that ever sees WALLET_PRIVATE_KEY. It pays x402
+      # inference charges and exposes a plain OpenAI-style endpoint on
+      # localhost; everything after this step spends only through it and can
+      # never exfiltrate the key. Everything under scripts/locked/ is frozen
+      # so agent-authored code cannot repurpose this step.
+      - name: Start x402 payment proxy (only holder of the wallet key)
+        env:
+          WALLET_PRIVATE_KEY: ${{ secrets.WALLET_PRIVATE_KEY }}
+          INFERENCE_BASE_URL: ${{ secrets.INFERENCE_BASE_URL }}
+          # INFERENCE_MODEL is a comma-separated priority list: the proxy runs
+          # the first and retries down the rest on provider errors. It needs the
+          # list in ITS env (the agent steps below are different processes).
+          INFERENCE_MODEL: ${{ secrets.INFERENCE_MODEL }}
+        run: |
+          # Exact pins: these packages run with WALLET_PRIVATE_KEY in env.
+          npm install --no-save --silent viem@2.55.2 @x402/fetch@2.18.0 @x402/evm@2.18.0 @x402/core@2.18.0 >/dev/null
+          export PORT_FILE="$RUNNER_TEMP/x402-port.json"
+          nohup node scripts/locked/x402-proxy.mjs >"$RUNNER_TEMP/x402-proxy.log" 2>&1 &
+          for i in $(seq 1 60); do [ -s "$PORT_FILE" ] && break; sleep 0.5; done
+          if [ ! -s "$PORT_FILE" ]; then
+            echo "::error::x402 payment proxy failed to start"
+            cat "$RUNNER_TEMP/x402-proxy.log"
+            exit 1
+          fi
+          echo "PROXY_BASE=$(jq -r .baseUrl "$PORT_FILE")" >> "$GITHUB_ENV"
+          # Directory that carries state between the frozen agent steps below
+          # (each runs as a separate process).
+          echo "AGENT_STATE=$RUNNER_TEMP/longlive-agent-state" >> "$GITHUB_ENV"
+
+      # No spend keys below this line. The frozen scripts/locked/agent/ steps
+      # guarantee the loop; each runs as a separate process and carries state
+      # forward through $AGENT_STATE. Only the deliver step (which pushes and
+      # opens the PR) receives GH_TOKEN; the implement step gets none, so
+      # agent-owned code never sees a credential.
+
+      # Step 1 — fetch + rank open proposals, screen them against the
+      # constitution. Sets `selected`; the rest of the loop is gated on it.
+      - name: Select proposal
+        id: select
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          INFERENCE_MODEL: ${{ secrets.INFERENCE_MODEL }}
+          # Optional override for the constitution-gate model (repo variable)
+          GATE_MODEL: ${{ vars.GATE_MODEL }}
+          # Login that authors proposal issues — the app's bot identity
+          # (repo variable PROPOSAL_CREATOR overrides it)
+          PROPOSAL_CREATOR: ${{ vars.PROPOSAL_CREATOR || format('{0}[bot]', steps.app-token.outputs.app-slug) }}
+          # Identity that authors the agent's PRs (the App token pushes/opens
+          # them) — only PRs by this author may claim a proposal
+          AGENT_PR_AUTHOR: ${{ format('{0}[bot]', steps.app-token.outputs.app-slug) }}
+        run: bash scripts/locked/agent/select-proposal.sh
+
+      # Step 2 — sanitize the untrusted proposal text (one cleaned copy the
+      # remaining steps read).
+      - name: Sanitize proposal
+        if: success() && steps.select.outputs.selected == 'true'
+        run: bash scripts/locked/agent/sanitize.sh
+
+      # Step 3 — create the feature branch + gather prior-attempt context.
+      - name: Create branch
+        if: success() && steps.select.outputs.selected == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PROPOSAL_CREATOR: ${{ vars.PROPOSAL_CREATOR || format('{0}[bot]', steps.app-token.outputs.app-slug) }}
+          AGENT_PR_AUTHOR: ${{ format('{0}[bot]', steps.app-token.outputs.app-slug) }}
+        run: bash scripts/locked/agent/create-branch.sh
+
+      # Step 4 — run the implementation: a single frozen Pi run that reads the
+      # repo's AGENTS.md for its rules. No GH_TOKEN here.
+      - name: Implement
+        if: success() && steps.select.outputs.selected == 'true'
+        env:
+          INFERENCE_MODEL: ${{ secrets.INFERENCE_MODEL }}
+        run: bash scripts/locked/agent/implement.sh
+
+      # Step 5 — push the branch and open the auto-merge PR.
+      - name: Deliver
+        if: success() && steps.select.outputs.selected == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: bash scripts/locked/agent/deliver.sh
