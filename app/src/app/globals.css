@@ -1,8 +1,65 @@
 @import "tailwindcss";
 
 @theme {
-  --color-bg: #000000;
-  --color-fg: #ffffff;
-  --color-muted: #888888;
+  --color-bg: var(--bg);
+  --color-fg: var(--fg);
+  --color-muted: var(--muted);
   --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace;
+}
+
+/* Default (dark) theme */
+:root {
+  --bg: #000000;
+  --fg: #ffffff;
+  --muted: #888888;
+}
+
+/* Light theme */
+:root[data-theme="light"] {
+  --bg: #ffffff;
+  --fg: #000000;
+  --muted: #555555;
+}
+
+/* Dark theme */
+:root[data-theme="dark"] {
+  --bg: #000000;
+  --fg: #ffffff;
+  --muted: #888888;
+}
+
+/* System: light */
+@media (prefers-color-scheme: light) {
+  :root[data-theme="system"],
+  :root:not([data-theme]) {
+    --bg: #ffffff;
+    --fg: #000000;
+    --muted: #555555;
+  }
+}
+
+/* System: dark */
+@media (prefers-color-scheme: dark) {
+  :root[data-theme="system"],
+  :root:not([data-theme]) {
+    --bg: #000000;
+    --fg: #ffffff;
+    --muted: #888888;
+  }
+}
+
+/* Logo invert helper — logo is black-on-transparent */
+.logo-auto {
+  filter: invert(1);
+}
+
+:root[data-theme="light"] .logo-auto {
+  filter: invert(0);
+}
+
+@media (prefers-color-scheme: light) {
+  :root[data-theme="system"] .logo-auto,
+  :root:not([data-theme]) .logo-auto {
+    filter: invert(0);
+  }
 }
