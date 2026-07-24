@@ -2,6 +2,7 @@ import Header from '@/components/Header'
 import ProposeForm from '@/components/ProposeForm'
 import ProposalFeed from '@/components/ProposalFeed'
 import Chat from '@/components/Chat'
+import PizzaCounter from '@/components/PizzaCounter'
 import { listProposals } from '@/lib/github'
 import { getUsdcBalance } from '@/lib/treasury'
 
@@ -47,6 +48,8 @@ export default async function Home() {
           )}
         </p>
 
+        <PizzaCounter />
+        <div className="mb-5" />
         <ProposeForm />
         <ProposalFeed
           proposals={proposals}
