@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 800" width="800" height="800">
+  <style>
+    .ink { fill: #000; }
+    .stroke { fill: none; stroke: #000; stroke-width: 46.96px; stroke-linecap: round; stroke-linejoin: round; }
+    @media (prefers-color-scheme: dark) {
+      .ink { fill: #fff; }
+      .stroke { stroke: #fff; }
+    }
+  </style>
+  <!-- "_ >" drawn as geometry, not text, so it renders identically without SF Mono -->
+  <rect class="ink" x="114" y="338" width="177" height="25"/>
+  <path class="ink" d="M560,103 L705,188 L705,213 L560,298 L560,266 L677,200.5 L560,135 Z"/>
+  <g transform="matrix(0.849755,-0.0562875,0.0443405,0.669394,60.9814,181.112)">
+    <path class="stroke" d="M160,590C287.588,670.52 419.9,750.1 580,590"/>
+  </g>
+</svg>

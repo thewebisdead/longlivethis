@@ -1,0 +1,199 @@
+name: agent
+
+# Fallback sweep every 12 hours (off-:00 — GitHub cron is best-effort and the
+# :00 slots are congested/skipped). Runs are otherwise event-driven: the app's
+# GitHub App credentials include actions:write, so app features may dispatch
+# this workflow on demand (e.g. "implement when a proposal reaches a 2/3
+# majority") — the base app ships with no such trigger.
+on:
+  schedule:
+    - cron: "23 */12 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: read
+
+# Never run two agents at once (a dispatch during a running sweep would
+# otherwise pick the same proposal twice and open duplicate PRs — double
+# inference spend). A second trigger waits for the first
+# to finish rather than cancelling it mid-implementation.
+concurrency:
+  group: agent
+  cancel-in-progress: false
+
+jobs:
+  implement:
+    # Only ever run against main. workflow_dispatch accepts any ref, and since
+    # branch contents aren't platform-locked (public repos can't have push
+    # rulesets) the agent's contents:write token can put a modified
+    # scripts/locked/ on a feature branch — dispatching that branch would run
+    # tampered code beside WALLET_PRIVATE_KEY. This file is itself frozen and
+    # unpushable by the agent (no workflows permission), so the guard cannot
+    # be removed.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      # Authenticate as the AGENT GitHub App (created at init): pushes, PRs, and
+      # auto-merges run as <app-slug>[bot], so merges trigger deploy.yml
+      # (events from the Actions GITHUB_TOKEN are suppressed by GitHub).
+      #
+      # The permission-* inputs are not decoration. Without them this action
+      # mints a token carrying the app's FULL installation permission set, and
+      # the `permissions:` block above governs only GITHUB_TOKEN — not this
+      # token. Narrowing here is what keeps GH_TOKEN in the steps below to
+      # exactly what the loop needs: push a branch, open/merge a PR, close a
+      # denied proposal. Notably NOT actions:write — nothing in this loop
+      # dispatches a workflow, and a token that could would let agent-reachable
+      # code re-trigger credential-holding workflows.
+      - id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-issues: write
+
+      - uses: actions/checkout@v5
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          # No credentials on disk: only the frozen deliver step pushes, using
+          # GH_TOKEN explicitly — code the agent runs cannot.
+          persist-credentials: false
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+
+      # Pinned exact version — this runs beside repo-write credentials, so no
+      # floating tags. The package is a small shim whose postinstall fetches the
+      # matching prebuilt binary (opencode-linux-x64); nothing is compiled here.
+      # Deliberately NOT the official sst/opencode GitHub Action: that action
+      # resolves "latest release" at run time and curl|bash installs it, which
+      # is an unpinned binary beside these credentials, and it ends in
+      # `opencode github run` (the issue-comment bot), not the one-shot run the
+      # frozen implement step needs.
+      - name: Install opencode
+        run: npm install -g opencode-ai@1.18.5
+
+      # The ONLY process that ever sees WALLET_PRIVATE_KEY. It pays x402
+      # inference charges and exposes a plain OpenAI-style endpoint on
+      # localhost; everything after this step spends only through it and can
+      # never exfiltrate the key. Everything under scripts/locked/ is frozen
+      # so agent-authored code cannot repurpose this step.
+      - name: Start x402 payment proxy (only holder of the wallet key)
+        env:
+          WALLET_PRIVATE_KEY: ${{ secrets.WALLET_PRIVATE_KEY }}
+          INFERENCE_BASE_URL: ${{ secrets.INFERENCE_BASE_URL }}
+          # INFERENCE_MODEL is a comma-separated priority list: the proxy runs
+          # the first and retries down the rest on provider errors. It needs the
+          # list in ITS env (the agent steps below are different processes).
+          # A repo VARIABLE, not a secret — a model id is not sensitive, and a
+          # retired model has to be fixable from the repo settings UI without
+          # touching frozen code. Nothing hardcodes a fallback: unset = hard fail.
+          INFERENCE_MODEL: ${{ vars.INFERENCE_MODEL }}
+        run: |
+          # Exact pins: these packages run with WALLET_PRIVATE_KEY in env.
+          # scripts/locked/x402/install-x402-deps.sh is frozen so the pins cannot
+          # drift across workflows (a bootstrap-vps.yml vs agent.yml pin drift
+          # lived here once — 0.1.9 vs 2.18.0).
+          bash scripts/locked/x402/install-x402-deps.sh >/dev/null
+          export PORT_FILE="$RUNNER_TEMP/x402-port.json"
+          nohup node scripts/locked/x402/x402-proxy.mjs >"$RUNNER_TEMP/x402-proxy.log" 2>&1 &
+          for i in $(seq 1 60); do [ -s "$PORT_FILE" ] && break; sleep 0.5; done
+          if [ ! -s "$PORT_FILE" ]; then
+            echo "::error::x402 payment proxy failed to start"
+            cat "$RUNNER_TEMP/x402-proxy.log"
+            exit 1
+          fi
+          echo "PROXY_BASE=$(jq -r .baseUrl "$PORT_FILE")" >> "$GITHUB_ENV"
+          echo "REFUND_URL=$(jq -r .refundUrl "$PORT_FILE")" >> "$GITHUB_ENV"
+          # Read by "Dump proxy log on failure" below — the proxy's own
+          # [x402inference] diagnostics (payment errors, model fallbacks) only
+          # ever land in this file; a step here failing shows nothing about
+          # WHY a proxied request failed unless something explicitly cats it.
+          echo "PROXY_LOG=$RUNNER_TEMP/x402-proxy.log" >> "$GITHUB_ENV"
+          # Directory that carries state between the frozen agent steps below
+          # (each runs as a separate process).
+          echo "AGENT_STATE=$RUNNER_TEMP/longlive-agent-state" >> "$GITHUB_ENV"
+
+      # No spend keys below this line. The frozen scripts/locked/agent/ steps
+      # guarantee the loop; each runs as a separate process and carries state
+      # forward through $AGENT_STATE. Only the deliver step (which pushes and
+      # opens the PR) receives GH_TOKEN; the implement step gets none, so
+      # agent-owned code never sees a credential.
+
+      # Step 1 — fetch + rank open proposals, screen them against the
+      # constitution. Sets `selected`; the rest of the loop is gated on it.
+      - name: Select proposal
+        id: select
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          INFERENCE_MODEL: ${{ vars.INFERENCE_MODEL }}
+          # Optional override for the constitution-gate model (repo variable)
+          GATE_MODEL: ${{ vars.GATE_MODEL }}
+          # Login that authors proposal issues. Proposals are filed by the
+          # PROPOSALS app (a different app from this one — its key is the only
+          # GitHub credential on the VPS), so this comes from the
+          # PROPOSAL_CREATOR repo variable, set at init. The fallback is the
+          # agent's own bot and exists only so a hand-rolled repo without the
+          # variable degrades to an empty queue rather than a hard failure.
+          PROPOSAL_CREATOR: ${{ vars.PROPOSAL_CREATOR || format('{0}[bot]', steps.app-token.outputs.app-slug) }}
+          # Identity that authors the agent's PRs (the App token pushes/opens
+          # them) — only PRs by this author may claim a proposal
+          AGENT_PR_AUTHOR: ${{ format('{0}[bot]', steps.app-token.outputs.app-slug) }}
+        run: bash scripts/locked/agent/select-proposal.sh
+
+      # Step 2 — sanitize the untrusted proposal text (one cleaned copy the
+      # remaining steps read).
+      - name: Sanitize proposal
+        if: success() && steps.select.outputs.selected == 'true'
+        run: bash scripts/locked/agent/sanitize.sh
+
+      # Step 3 — create the feature branch + gather prior-attempt context.
+      - name: Create branch
+        if: success() && steps.select.outputs.selected == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PROPOSAL_CREATOR: ${{ vars.PROPOSAL_CREATOR || format('{0}[bot]', steps.app-token.outputs.app-slug) }}
+          AGENT_PR_AUTHOR: ${{ format('{0}[bot]', steps.app-token.outputs.app-slug) }}
+        run: bash scripts/locked/agent/create-branch.sh
+
+      # Step 4 — run the implementation: a single frozen opencode run that reads
+      # the repo's AGENTS.md for its rules. No GH_TOKEN here.
+      - name: Implement
+        if: success() && steps.select.outputs.selected == 'true'
+        env:
+          INFERENCE_MODEL: ${{ vars.INFERENCE_MODEL }}
+          # Wall-clock bound on the agent run (seconds). opencode retries
+          # upstream 5xx/429 silently, so an unbounded run can hang to the job
+          # timeout with no log output. Repo variable overrides the 1h default.
+          IMPLEMENT_TIMEOUT: ${{ vars.IMPLEMENT_TIMEOUT }}
+        run: bash scripts/locked/agent/implement.sh
+
+      # Step 5 — push the branch and open the auto-merge PR.
+      - name: Deliver
+        if: success() && steps.select.outputs.selected == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: bash scripts/locked/agent/deliver.sh
+
+      # Step 6 — reclaim whatever's left of this run's x402inference channel
+      # deposit, win or lose. `always()`: a failed select/implement/deliver
+      # still funded a channel and must not leave that USDC stranded until the
+      # next run. No credentials here — the proxy (still running, holding
+      # WALLET_PRIVATE_KEY) does the signing; this step only asks it to.
+      # REFUND_URL is unset if the proxy itself never started, so the guard
+      # skips cleanly rather than curling an empty URL.
+      - name: Recover x402inference budget
+        if: always() && env.REFUND_URL != ''
+        run: |
+          curl -sf -X POST "$REFUND_URL" && echo || echo "::warning::x402inference refund failed — unused balance stays in the channel for next run to reuse"
+
+      # Diagnostic only, no credentials: the proxy's own log, otherwise
+      # invisible — nothing else in this job ever prints it.
+      - name: Dump proxy log on failure
+        if: failure() && env.PROXY_LOG != ''
+        run: cat "$PROXY_LOG" || true

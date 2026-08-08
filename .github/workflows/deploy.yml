@@ -1,0 +1,157 @@
+name: deploy
+
+# Frozen wrapper — holds the VPS SSH credentials. The deploy PROCEDURE lives in
+# scripts/deploy.sh (agent-owned, runs on the VPS where there are no spend keys).
+# This file is frozen (test.yml blocks agent edits to .github/workflows/)
+# so the agent cannot move credentials out of this boundary.
+#
+# After deploying it health-checks the live site from outside (catches Caddy/
+# TLS/DNS breakage CI can't see). On failure it rolls the VPS back to the
+# `last-good` tag — set here on every healthy deploy — and re-runs that
+# commit's own deploy.sh. The app should only die when the money runs out,
+# not because one bad build slipped through.
+#
+# Gated on the `test` workflow: this runs only after test.yml completes for a
+# push to main, and the job below bails unless that run passed. A bad build
+# therefore never reaches the VPS.
+on:
+  workflow_run:
+    workflows: ["test"]
+    types: [completed]
+    branches: ["main"]
+
+permissions:
+  contents: read
+  # Read-only listing of workflow runs, so the gate below can see whether a VPS
+  # lifecycle job is in flight.
+  actions: read
+
+# One deploy at a time; let an in-flight deploy finish rather than cancelling it.
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # Only deploy when the triggering test run was a push to main that passed.
+    if: >-
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.conclusion == 'success'
+    env:
+      VPS_HOST: ${{ secrets.VPS_HOST }}
+      VPS_USER: ${{ secrets.VPS_USER }}
+      PUBLIC_URL: ${{ secrets.PUBLIC_URL }}
+    steps:
+      # Sets `skip` for the steps below. A bare `exit 0` would NOT do it — that
+      # ends the step, not the job, so every SSH step would still run.
+      #
+      # Skipping is safe here and nowhere else: migrate re-syncs the new box to
+      # origin/main immediately before it cuts over, so a commit whose deploy was
+      # skipped for this reason still goes live, on the new box, minutes later.
+      # Deploying THROUGH a cutover is what must never happen — the credentials
+      # this job uses are rotated mid-flight, so the deploy writes its commit to
+      # the box being retired, then health-checks the domain (already answering
+      # from the new box), and reports success while the commit is live nowhere.
+      - name: Gate on VPS state
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ -z "$VPS_HOST" ]; then
+            echo "::warning::VPS_HOST is not set — bootstrap has not completed. Skipping deploy."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          busy=$(gh api "repos/${{ github.repository }}/actions/runs?status=in_progress&per_page=100" \
+                   --jq '[.workflow_runs[] | select(.name=="migrate" or .name=="bootstrap-vps")] | length')
+          # renew is deliberately NOT in that list: it is pure provider API and
+          # never touches the box or the deploy secrets.
+          if [ "$busy" != "0" ]; then
+            echo "::warning::A VPS lifecycle run is in flight — skipping this deploy. The migration re-syncs the box to origin/main before cutover, so this commit still ships."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # VPS_HOST_KEY is the host's public key (ssh-keyscan format), captured
+      # at init — SSH refuses to connect to anything else (no MITM window).
+      - name: Set up SSH key
+        if: steps.gate.outputs.skip != 'true'
+        env:
+          VPS_SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+          VPS_HOST_KEY: ${{ secrets.VPS_HOST_KEY }}
+        run: |
+          echo "$VPS_SSH_PRIVATE_KEY" > /tmp/deploy_key
+          chmod 600 /tmp/deploy_key
+          echo "$VPS_HOST_KEY" > /tmp/deploy_known_hosts
+
+      - name: Deploy to VPS
+        if: steps.gate.outputs.skip != 'true'
+        run: |
+          ssh -i /tmp/deploy_key \
+              -o UserKnownHostsFile=/tmp/deploy_known_hosts \
+              -o StrictHostKeyChecking=yes \
+              "${VPS_USER}@${VPS_HOST}" \
+              'set -euo pipefail
+               cd /opt/longlive
+               git fetch origin main
+               git reset --hard origin/main
+               bash scripts/deploy.sh'
+
+      - name: Health check (life-support endpoints, from outside)
+        if: steps.gate.outputs.skip != 'true'
+        run: |
+          # Homepage only: it server-renders the feed, so a 200 proves GitHub
+          # reads work. /api/proposals is POST-only and cannot be probed.
+          for path in /; do
+            ok=0
+            for i in $(seq 1 20); do
+              if curl -sf -o /dev/null --max-time 10 "${PUBLIC_URL}${path}"; then
+                ok=1
+                break
+              fi
+              sleep 5
+            done
+            if [ "$ok" != 1 ]; then
+              echo "::error::${PUBLIC_URL}${path} is not healthy after deploy"
+              exit 1
+            fi
+            echo "healthy: ${PUBLIC_URL}${path}"
+          done
+
+      - name: Roll back to last good deploy
+        if: failure() && steps.gate.outputs.skip != 'true'
+        run: |
+          echo "::warning::Deploy unhealthy — rolling back to last-good"
+          ssh -i /tmp/deploy_key \
+              -o UserKnownHostsFile=/tmp/deploy_known_hosts \
+              -o StrictHostKeyChecking=yes \
+              "${VPS_USER}@${VPS_HOST}" \
+              'set -euo pipefail
+               cd /opt/longlive
+               if git rev-parse -q --verify last-good >/dev/null; then
+                 git reset --hard last-good
+                 bash scripts/deploy.sh
+               else
+                 echo "no last-good tag yet (first deploy?) — nothing to roll back to"
+               fi'
+          if curl -sf -o /dev/null --max-time 10 "${PUBLIC_URL}/"; then
+            echo "rollback healthy: ${PUBLIC_URL}/"
+          else
+            echo "::error::still unhealthy after rollback — manual intervention needed"
+          fi
+
+      # Tag only after the external health check passed, so `last-good` always
+      # points at a commit that was verifiably alive in production.
+      - name: Mark this deploy as last-good
+        if: steps.gate.outputs.skip != 'true'
+        run: |
+          ssh -i /tmp/deploy_key \
+              -o UserKnownHostsFile=/tmp/deploy_known_hosts \
+              -o StrictHostKeyChecking=yes \
+              "${VPS_USER}@${VPS_HOST}" \
+              'cd /opt/longlive && git tag -f last-good >/dev/null && echo "last-good → $(git rev-parse --short HEAD)"'
+
+      - name: Remove SSH key
+        if: always()
+        run: rm -f /tmp/deploy_key /tmp/deploy_known_hosts

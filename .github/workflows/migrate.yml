@@ -1,0 +1,94 @@
+name: migrate
+
+# Balance-driven server migration. Sizes the VPS to the wallet's USDC balance —
+# downsize when runway gets short, upsize when funded — keeping the same domain
+# (DNS is repointed, deploy secrets are rotated). FROZEN wrapper: it holds the
+# spend key, the Cloudflare token, and mints the secret-rotator app token, so the
+# migration PROCEDURE (scripts/locked/vps/migrate-vps.mjs) cannot move those out of
+# this boundary.
+#
+# Runs a few times a day; migrate-vps.mjs no-ops unless the balance actually
+# crosses a plan boundary (with hysteresis, so a draining wallet migrates once).
+# Inert unless enabled: skips entirely when the migration secrets are absent.
+on:
+  schedule:
+    - cron: "37 */8 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Never overlap migrate with itself or with a renewal double-spend.
+concurrency:
+  group: vps-lifecycle
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    # main only — a feature branch's scripts run beside the spend key + rotator
+    # token, and branch contents are not platform-locked (same rule as renew/agent).
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    # Hoist secret presence into env so steps can gate on it (secrets aren't
+    # directly usable in step `if:`). Enabled only when both are configured.
+    env:
+      MIGRATION_ENABLED: ${{ secrets.ROTATOR_APP_ID != '' && secrets.CF_API_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        if: env.MIGRATION_ENABLED == 'true'
+        with:
+          node-version: "24"
+
+      # Exact pins: these packages run with WALLET_PRIVATE_KEY in env.
+      # The frozen install script keeps the pins identical across workflows.
+      - name: Install x402 deps
+        if: env.MIGRATION_ENABLED == 'true'
+        run: bash scripts/locked/x402/install-x402-deps.sh
+
+      # lego issues the new box's TLS cert via ACME DNS-01 (Cloudflare) here in
+      # the action, so no ACME/DNS credential is ever placed on the VPS. Pinned.
+      - name: Install lego (ACME client)
+        if: env.MIGRATION_ENABLED == 'true'
+        run: |
+          curl -fsSL https://github.com/go-acme/lego/releases/download/v4.19.2/lego_v4.19.2_linux_amd64.tar.gz \
+            | sudo tar -xz -C /usr/local/bin lego
+          lego --version
+
+      # Mint a short-lived token from the DEDICATED secret-rotator app (secrets:write
+      # only, separate from the agent app) — the one privilege GITHUB_TOKEN lacks.
+      - name: Mint secret-rotator token
+        id: rotator
+        if: env.MIGRATION_ENABLED == 'true'
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.ROTATOR_APP_ID }}
+          private-key: ${{ secrets.ROTATOR_APP_PRIVATE_KEY }}
+
+      - name: Migrate the VPS if the balance crossed a plan boundary
+        if: env.MIGRATION_ENABLED == 'true'
+        env:
+          WALLET_PRIVATE_KEY: ${{ secrets.WALLET_PRIVATE_KEY }}
+          X402_COMPUTE_INSTANCE_ID: ${{ secrets.X402_COMPUTE_INSTANCE_ID }}
+          PUBLIC_URL: ${{ secrets.PUBLIC_URL }}
+          APP_ENV: ${{ secrets.APP_ENV }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          # Current deploy pointers — used ONLY to roll back if the new box fails its public check.
+          VPS_SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+          VPS_HOST_KEY: ${{ secrets.VPS_HOST_KEY }}
+          # Cloudflare (DNS:Edit on one zone) — used for the A-record cutover AND
+          # ACME DNS-01 issuance of the new box's cert (via lego, in this action).
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_ZONE_ID: ${{ secrets.CF_ZONE_ID }}
+          # ACME account email for lego (optional; defaults to admin@<domain>).
+          ACME_EMAIL: ${{ secrets.ACME_EMAIL }}
+          # Short-lived rotator-app token — rotates the deploy target after cutover.
+          GH_TOKEN: ${{ steps.rotator.outputs.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          # Tunable via repo variables (unset ⇒ defaults in migrate-vps.mjs).
+          TARGET_RUNWAY_DAYS: ${{ vars.TARGET_RUNWAY_DAYS }}
+          MIN_RUNWAY_DAYS: ${{ vars.MIN_RUNWAY_DAYS }}
+          MAX_MIGRATIONS_PER_DAY: ${{ vars.MAX_MIGRATIONS_PER_DAY }}
+        run: node scripts/locked/vps/migrate-vps.mjs

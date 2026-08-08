@@ -1,0 +1,28 @@
+# Caddy config for the living app.
+#
+# Behind Cloudflare (when the deployment was created with a CF zone token):
+#   - Rate limiting lives at the CF edge, keyed on the REAL client IP (set up
+#     at init via the Cloudflare Rulesets API — see src/lib/dns.ts). The
+#     previous `key {remote_host}` would otherwise see CF's edge IP shared
+#     across thousands of users, throttling legit users and multiplying
+#     attacker throughput across PoPs.
+#   - Authenticated Origin Pulls: CF presents a client cert signed by CF's
+#     Origin Pull CA on every origin connection. Caddy requires+verifies it
+#     (the `tls { client_auth { ... } }` block below is rendered for CF-fronted
+#     deployments; empty otherwise), so a direct hit on the VPS IP — bypassing
+#     CF and its edge rate limit — fails the TLS handshake before any HTTP
+#     happens. No CF-IP allowlist to maintain.
+#
+# Direct deployments (operator did NOT add a CF zone token — free sslip.io
+# hostnames, or BYO domain with manual DNS) ship without rate limiting and
+# without origin-pull enforcement.
+longlivethis.site {
+  tls {
+    client_auth {
+      mode require_and_verify
+      trusted_ca_cert_file /etc/caddy/cloudflare-origin.pem
+    }
+  }
+  reverse_proxy localhost:3000
+  encode gzip
+}

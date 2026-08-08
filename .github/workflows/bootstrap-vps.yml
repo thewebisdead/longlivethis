@@ -1,0 +1,93 @@
+name: bootstrap-vps
+
+# Idempotent: provisions a VPS, bootstraps it, sets DNS, and writes deploy-
+# target secrets. If X402_COMPUTE_INSTANCE_ID is already set and the instance
+# is active, the provision script exits early — safe to dispatch on any push
+# or re-run manually without duplicating boxes.
+#
+# Dispatched by create-longlive during init, and also triggerable manually
+# from the Actions tab (main only — see the job guard). Uses the secret-rotator
+# app token for `gh secret set` (GITHUB_TOKEN cannot write secrets).
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One VPS lifecycle operation at a time. Shared with renew + migrate, not just
+# with other bootstraps: bootstrap and migrate both provision boxes and write the
+# same deploy-target secrets, so an overlap could interleave two different boxes'
+# credentials into VPS_HOST / VPS_SSH_PRIVATE_KEY.
+concurrency:
+  group: vps-lifecycle
+  cancel-in-progress: false
+
+jobs:
+  bootstrap:
+    # Only ever run against main — same rule as agent/renew/migrate, and it
+    # matters most here: this job holds WALLET_PRIVATE_KEY, CF_API_TOKEN and a
+    # rotator token with secrets:write, and it executes scripts/locked/ code
+    # FROM THE DISPATCHED REF. workflow_dispatch accepts any ref, branch
+    # contents aren't platform-locked (public repos can't have push rulesets),
+    # and the frozen-file check only runs on pull_request — so without this
+    # guard anyone able to push a branch and dispatch this workflow could run
+    # tampered code beside the spend key and rewrite every repo secret.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    env:
+      WALLET_PRIVATE_KEY: ${{ secrets.WALLET_PRIVATE_KEY }}
+      APP_ENV: ${{ secrets.APP_ENV }}
+      PUBLIC_URL: ${{ secrets.PUBLIC_URL }}
+      REPO_URL: ${{ secrets.REPO_URL }}
+      VPS_USER: ${{ secrets.VPS_USER || 'root' }}
+      CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+      CF_ZONE_ID: ${{ secrets.CF_ZONE_ID }}
+      ACME_EMAIL: ${{ secrets.ACME_EMAIL }}
+      X402_COMPUTE_INSTANCE_ID: ${{ secrets.X402_COMPUTE_INSTANCE_ID }}
+    steps:
+      - name: Mint rotator token (secrets:write)
+        id: rotator
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.ROTATOR_APP_ID }}
+          private-key: ${{ secrets.ROTATOR_APP_PRIVATE_KEY }}
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install deps
+        # The frozen install script pins viem@2.55.2 + @x402/*@2.21.0 — the
+        # same versions agent/renew/migrate use. A prior version of this step
+        # pinned @x402/fetch@0.1.9 and a floating viem@^2.27, so the initial
+        # provision ran different x402 code beside the wallet key than the rest
+        # of the fleet. Centralising removes that drift.
+        run: bash scripts/locked/x402/install-x402-deps.sh
+
+      # lego issues the new box's TLS cert via ACME DNS-01 (Cloudflare) here in
+      # the action, so no ACME/DNS credential is ever placed on the VPS. Pinned.
+      # Same step (and pin) as migrate.yml: both run provisionAndBootstrap(),
+      # whose preSeedCert() shells out to `lego`. Without it a CF-fronted domain
+      # comes up with no cert — the edge then serves 525 because the HTTP-01
+      # fallback deadlocks (the challenge URL redirects to the HTTPS the box
+      # cannot yet serve).
+      - name: Install lego (ACME client)
+        run: |
+          curl -fsSL https://github.com/go-acme/lego/releases/download/v4.19.2/lego_v4.19.2_linux_amd64.tar.gz \
+            | sudo tar -xz -C /usr/local/bin lego
+          lego --version
+
+      - name: Provision and bootstrap VPS
+        env:
+          GH_TOKEN: ${{ steps.rotator.outputs.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+        run: node scripts/locked/vps/bootstrap.mjs
+
+      - name: Clean up temp files
+        if: always()
+        run: rm -f /tmp/longlive-prov-* /tmp/id_ed25519* 2>/dev/null || true
