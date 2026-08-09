@@ -86,7 +86,10 @@ jobs:
       - name: Start x402 payment proxy (only holder of the wallet key)
         env:
           WALLET_PRIVATE_KEY: ${{ secrets.WALLET_PRIVATE_KEY }}
-          INFERENCE_BASE_URL: ${{ secrets.INFERENCE_BASE_URL }}
+          # A repo VARIABLE, not a secret — the gateway URL is not sensitive,
+          # and unlike a key it's a value someone may legitimately need to read
+          # or fix from the repo settings UI without touching frozen code.
+          INFERENCE_BASE_URL: ${{ vars.INFERENCE_BASE_URL }}
           # INFERENCE_MODEL is a comma-separated priority list: the proxy runs
           # the first and retries down the rest on provider errors. It needs the
           # list in ITS env (the agent steps below are different processes).

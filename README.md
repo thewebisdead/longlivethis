@@ -1,5 +1,7 @@
 # longlivethis
 
+![treasury](https://longlivethis.site/api/badge/treasury)
+
 A "living" webapp. The app is alive if it has money to pay for its own server. When the money runs out the app dies.
 
 Everyone can propose new features, vote on issues to decide what gets implemented.
