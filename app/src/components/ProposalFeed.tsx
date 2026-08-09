@@ -20,7 +20,7 @@ function VoteButton({ issue, dir }: { issue: number; dir: 'up' | 'down' }) {
       href={`/api/vote?issue=${issue}&dir=${dir}`}
       title={up ? 'Vote for this (via GitHub)' : 'Vote against this (via GitHub)'}
       aria-label={up ? 'Vote for' : 'Vote against'}
-      className="block px-2 leading-none text-muted hover:text-fg focus:text-fg focus:outline-none"
+      className="block px-2 leading-none text-base text-muted hover:text-fg focus:text-fg focus:outline-none"
     >
       {up ? '▲' : '▼'}
     </a>
@@ -50,11 +50,11 @@ export default function ProposalFeed({ proposals }: { proposals: Proposal[] }) {
           <div
             key={p.id}
             id={`p${p.id}`}
-            className="border-t border-fg last:border-b py-4 flex gap-4 items-start"
+            className="border-t border-fg last:border-b py-4 flex gap-4 items-center"
           >
             <span className="flex flex-col items-center gap-1 shrink-0">
               <VoteButton issue={p.id} dir="up" />
-              <span className="inline-block border border-fg font-mono text-[0.75rem] px-[0.6rem] py-[0.4rem] min-w-[3rem] text-center tabular-nums">
+              <span className="inline-block font-mono font-bold text-[0.75rem] px-[0.6rem] py-[0.4rem] min-w-[3rem] text-center tabular-nums">
                 {p.votes}
               </span>
               <VoteButton issue={p.id} dir="down" />
@@ -65,7 +65,7 @@ export default function ProposalFeed({ proposals }: { proposals: Proposal[] }) {
               rel="noopener"
               className="flex-1 no-underline text-fg group"
             >
-              <span className="block text-[0.9rem] leading-normal group-hover:underline">
+              <span className="block text-[1.05rem] leading-normal text-center group-hover:underline">
                 {p.title}
               </span>
             </a>
