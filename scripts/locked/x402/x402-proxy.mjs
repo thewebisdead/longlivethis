@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-/** Start local OpenAI proxy → x402inference. Writes {port,baseUrl,refundUrl} to PORT_FILE and stays up. */
+/** Start local OpenAI proxy → x402gate. Writes {port,baseUrl} to PORT_FILE and stays up. */
 import { writeFileSync } from 'node:fs'
-import { startProxy } from './x402inference.mjs'
+import { startProxy } from './x402gate.mjs'
 
 const portFile = process.env.PORT_FILE
 if (!portFile) {
@@ -9,7 +9,7 @@ if (!portFile) {
   process.exit(1)
 }
 
-const { port, baseUrl, refundUrl } = await startProxy(0)
-writeFileSync(portFile, JSON.stringify({ port, baseUrl, refundUrl }))
-console.error(`x402inference proxy listening on ${baseUrl}`)
+const { port, baseUrl } = await startProxy(0)
+writeFileSync(portFile, JSON.stringify({ port, baseUrl }))
+console.error(`x402gate proxy listening on ${baseUrl}`)
 await new Promise(() => {})

@@ -112,11 +112,10 @@ jobs:
             exit 1
           fi
           echo "PROXY_BASE=$(jq -r .baseUrl "$PORT_FILE")" >> "$GITHUB_ENV"
-          echo "REFUND_URL=$(jq -r .refundUrl "$PORT_FILE")" >> "$GITHUB_ENV"
           # Read by "Dump proxy log on failure" below — the proxy's own
-          # [x402inference] diagnostics (payment errors, model fallbacks) only
-          # ever land in this file; a step here failing shows nothing about
-          # WHY a proxied request failed unless something explicitly cats it.
+          # [x402gate] diagnostics (payment errors, model fallbacks) only ever
+          # land in this file; a step here failing shows nothing about WHY a
+          # proxied request failed unless something explicitly cats it.
           echo "PROXY_LOG=$RUNNER_TEMP/x402-proxy.log" >> "$GITHUB_ENV"
           # Directory that carries state between the frozen agent steps below
           # (each runs as a separate process).
@@ -182,18 +181,6 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: bash scripts/locked/agent/deliver.sh
-
-      # Step 6 — reclaim whatever's left of this run's x402inference channel
-      # deposit, win or lose. `always()`: a failed select/implement/deliver
-      # still funded a channel and must not leave that USDC stranded until the
-      # next run. No credentials here — the proxy (still running, holding
-      # WALLET_PRIVATE_KEY) does the signing; this step only asks it to.
-      # REFUND_URL is unset if the proxy itself never started, so the guard
-      # skips cleanly rather than curling an empty URL.
-      - name: Recover x402inference budget
-        if: always() && env.REFUND_URL != ''
-        run: |
-          curl -sf -X POST "$REFUND_URL" && echo || echo "::warning::x402inference refund failed — unused balance stays in the channel for next run to reuse"
 
       # Diagnostic only, no credentials: the proxy's own log, otherwise
       # invisible — nothing else in this job ever prints it.

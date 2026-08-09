@@ -49,18 +49,18 @@ AGENT_PROMPT="$(render_template "$PROMPTS_DIR/implement.tmpl" \
 # Register the proxy as an OpenAI-compatible provider (cost 0 — the proxy has
 # already paid the x402 charge). @ai-sdk/openai-compatible is compiled into the
 # opencode binary, so naming it here pulls nothing from a registry at run time.
-# PROXY_BASE already ends in /v1 (x402inference.mjs publishes it that way and
+# PROXY_BASE already ends in /v1 (x402gate.mjs publishes it that way and
 # agent.yml reads it straight from the port file) — do not append it again.
 # The context/output limits are stated explicitly because models.dev has no
-# entry for a private "x402inference" provider — the catalogue opencode downloads at
+# entry for a private "x402gate" provider — the catalogue opencode downloads at
 # startup describes public providers, never this one, so without these
 # autocompact would have nothing to work from for the base model.
 export OPENCODE_CONFIG_DIR="${OPENCODE_CONFIG_DIR:-$REPO_ROOT/.opencode-agent}"
 mkdir -p "$OPENCODE_CONFIG_DIR"
 jq -n --arg base "$PROXY_BASE" --arg m "$MODEL" '{
   "$schema": "https://opencode.ai/config.json",
-  provider: { x402inference: {
-    npm: "@ai-sdk/openai-compatible", name: "x402inference",
+  provider: { x402gate: {
+    npm: "@ai-sdk/openai-compatible", name: "x402gate",
     options: { baseURL: $base, apiKey: "x402" },
     models: { ($m): { name: $m, limit: { context: 128000, output: 16384 },
                       cost: { input: 0, output: 0, cache_read: 0, cache_write: 0 } } }
@@ -134,7 +134,7 @@ oc_stream() {
   local rc=0
   # ${arr[@]+"${arr[@]}"}: expands to nothing when TIMEOUT_CMD is empty without
   # tripping `set -u` on bash 3.2 (macOS); runners ship bash 5, self-hosted may not.
-  { ${TIMEOUT_CMD[@]+"${TIMEOUT_CMD[@]}"} "$@" run --model "x402inference/$MODEL" \
+  { ${TIMEOUT_CMD[@]+"${TIMEOUT_CMD[@]}"} "$@" run --model "x402gate/$MODEL" \
       --format json "$AGENT_PROMPT" | tee "$RAW"; } || rc=$?
   if [ "$rc" -eq 124 ]; then
     echo "::error::opencode exceeded the ${RUN_TIMEOUT}s implementation timeout (silent upstream retries?)"; return 1

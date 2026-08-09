@@ -123,7 +123,7 @@ capabilities, never your access to spend credentials.
     run. `implement.sh` is a single frozen opencode run that reads **this AGENTS.md**
     for its rules — steer how features get built by editing AGENTS.md (and the
     prompt templates are for reference only; they are frozen).
-  - `x402/x402-proxy.mjs`, `x402/x402inference.mjs`, `x402/x402compute.mjs`, and
+  - `x402/x402-proxy.mjs`, `x402/x402gate.mjs`, `x402/x402compute.mjs`, and
     `vps/renew-vps.mjs` — they run inside credential-bearing workflows and are
     the only code that ever touches `WALLET_PRIVATE_KEY`. Your environment never
     has the key; inference is paid through the local proxy (`PROXY_BASE`).

@@ -1,26 +1,30 @@
 #!/usr/bin/env node
 /**
- * Shared x402inference.com helpers for the agent — batch-settlement channel:
- * deposit once, then cheap voucher-only requests until the channel needs a
- * top-up (init already funded it; a run only deposits again if it runs the
- * balance down).
+ * Shared x402gate.io helpers for the agent (prepaid + per-request pay).
  * Deps (installed by agent.yml): viem, @x402/fetch, @x402/evm, @x402/core
  */
 import { createServer } from 'node:http'
 import { createPublicClient, http } from 'viem'
 import { base } from 'viem/chains'
-import { x402Client, wrapFetchWithPayment } from '@x402/fetch'
-import { BatchSettlementEvmScheme, toClientEvmSigner } from '@x402/evm'
+import { x402Client } from '@x402/fetch'
+import { ExactEvmScheme } from '@x402/evm'
 import { makeAccount } from '../lib/wallet.mjs'
 import { USDC_BASE } from '../lib/constants.mjs'
 
 export { makeAccount }
 
-export const X402INFERENCE = (process.env.INFERENCE_BASE_URL || 'https://x402inference.com/accountless').replace(
+export const X402GATE = (process.env.INFERENCE_BASE_URL || 'https://x402gate.io/v1/openrouter').replace(
   /\/$/,
   ''
 )
-export const GATEWAY_ORIGIN = X402INFERENCE.replace(/\/accountless$/, '') || 'https://x402inference.com'
+export const GATEWAY_ORIGIN = X402GATE.includes('/v1/openrouter')
+  ? X402GATE.replace(/\/v1\/openrouter$/, '')
+  : 'https://x402gate.io'
+
+function sanitizeAccept(accept) {
+  const { price: _p, ...rest } = accept
+  return rest
+}
 
 // --- Per-run spend cap: one run may spend at most HALF of the wallet's ------
 // USDC balance at run start. Checked on-chain before every payment (top-up or
@@ -48,10 +52,10 @@ async function initSpendCap(account) {
     const bal = await walletUsdc(account.address)
     capAddress = account.address
     spendFloorUsd = bal / 2
-    console.error(`[x402inference] spend cap: wallet $${bal.toFixed(2)} USDC — this run stops paying below $${spendFloorUsd.toFixed(2)}`)
+    console.error(`[x402gate] spend cap: wallet $${bal.toFixed(2)} USDC — this run stops paying below $${spendFloorUsd.toFixed(2)}`)
   } catch (e) {
     // Fail open (like the run cooldown): an RPC hiccup must not kill the loop.
-    console.error(`[x402inference] warning: could not read wallet balance for spend cap: ${e?.message || e}`)
+    console.error(`[x402gate] warning: could not read wallet balance for spend cap: ${e?.message || e}`)
   }
 }
 
@@ -70,84 +74,83 @@ async function assertSpendAllowed() {
   }
 }
 
-// x402inference's batch-settlement scheme rejects any deposit under 1000
-// atomic units ($0.001) — bisected against this same endpoint (longlive repo,
-// scratch/bisect-deposit-floor.ts). A bare "just the required top-up" deposit
-// strategy signs exactly that kind of dust once a channel has partial
-// headroom (real per-request cost is tens–hundreds of atomic units), and every
-// top-up after the first would be rejected with amount_too_low. Pad every
-// deposit past the floor regardless of the route's advertised ceiling.
-const DUST_FLOOR_ATOMIC = 2000n // 2x the measured floor, safety margin
-
-function depositStrategy(context) {
-  const min = BigInt(context.minimumDepositAmount)
-  const padded = min * 5n
-  const amount = padded > DUST_FLOOR_ATOMIC ? padded : DUST_FLOOR_ATOMIC
-  return (amount > min ? amount : min).toString()
+export function makeClient(account) {
+  const client = new x402Client()
+  client.register('eip155:8453', new ExactEvmScheme(account))
+  client.register('eip155:*', new ExactEvmScheme(account))
+  return client
 }
 
-/**
- * Builds the batch-settlement client. No explicit channel salt: every process
- * (init's provisioning probe, and every future agent run) that builds this for
- * the same signer + receiver derives the SAME channel and recovers its
- * on-chain balance automatically, so a fresh run reuses funding from earlier
- * runs instead of depositing again.
- */
-export function makeClient(account, publicClient) {
-  const signer = toClientEvmSigner(account, publicClient)
-  const scheme = new BatchSettlementEvmScheme(signer, { depositStrategy })
-  const client = new x402Client().register('eip155:8453', scheme)
-  return { client, scheme }
-}
-
-// A batch-settlement channel is stateful local-side (cumulative voucher
-// amount, recovered balance): unlike the old x402gate prepaid headers —
-// stateless signed messages, safe from any number of callers at once —
-// two concurrent payAndRetry calls both read the same local channel state,
-// both sign a voucher against it, and the second one to land is a stale
-// claim the server rejects. opencode's "Implement" step runs a full agentic
-// session that can fire concurrent tool calls, so this WILL happen under the
-// old fire-and-forget shape. Serialize every call through the queue below —
-// each payment fully lands (payload creation, upstream call, local state
-// update) before the next one starts.
-let paymentQueue = Promise.resolve()
-
-/** Pay (voucher-only if the channel already has headroom, deposit + voucher otherwise) and return the response. */
+/** Pay a 402 from x402gate and return the paid Response. */
 export async function payAndRetry(url, init, client) {
-  const run = async () => {
-    await assertSpendAllowed()
-    return wrapFetchWithPayment(fetch, client)(url, init)
+  let res = await fetch(url, init)
+  if (res.status !== 402) return res
+  await assertSpendAllowed()
+  const payBody = await res.json()
+  const accept = payBody.accepts?.find((a) => String(a.network).includes('eip155:8453'))
+  if (!accept) throw new Error('No Base payment option in 402')
+  const payload = await client.createPaymentPayload({
+    x402Version: 2,
+    accepts: [sanitizeAccept(accept)],
+    resource: url,
+  })
+  const wire = {
+    x402Version: payload.x402Version,
+    payload: payload.payload,
+    accepted: sanitizeAccept(accept),
   }
-  const result = paymentQueue.then(run, run)
-  // Never let one caller's rejection break the queue for callers behind it.
-  paymentQueue = result.then(
-    () => undefined,
-    () => undefined
+  const headers = new Headers(init.headers || {})
+  headers.set('PAYMENT-SIGNATURE', Buffer.from(JSON.stringify(wire)).toString('base64'))
+  return fetch(url, { ...init, headers })
+}
+
+/** Prepaid balance for address (in-memory on gateway). */
+export async function getPrepaidBalance(address) {
+  const r = await fetch(`${GATEWAY_ORIGIN}/v1/balance/${address}`)
+  if (!r.ok) return 0
+  const j = await r.json()
+  return parseFloat(j.balance || '0') || 0
+}
+
+/** Top up prepaid balance (USDC on Base). amount in USD. */
+export async function topUpPrepaid(client, amountUsd = 0.5) {
+  await assertSpendAllowed()
+  const url = `${GATEWAY_ORIGIN}/v1/topup`
+  const body = JSON.stringify({ amount: amountUsd })
+  const res = await payAndRetry(
+    url,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body },
+    client
   )
-  return result
+  const text = await res.text()
+  if (!res.ok) throw new Error(`topup failed: ${res.status} ${text.slice(0, 300)}`)
+  return JSON.parse(text)
 }
 
-export async function ensureAuth() {
+/** EIP-191 prepaid headers for path like openrouter/chat/completions */
+export async function prepaidHeaders(account, subPath) {
+  const ts = Math.floor(Date.now() / 1000)
+  const msg = `x402gate:${subPath}:${ts}`
+  const signature = await account.signMessage({ message: msg })
+  return {
+    'X-PREPAID-PUBKEY': account.address,
+    'X-PREPAID-SIGNATURE': signature,
+    'X-PREPAID-TIMESTAMP': String(ts),
+  }
+}
+
+export async function ensurePrepaid(minUsd = 0.05) {
   const account = makeAccount()
-  const publicClient = createPublicClient({ chain: base, transport: http() })
-  const { client, scheme } = makeClient(account, publicClient)
+  const client = makeClient(account)
   await initSpendCap(account)
-  return { account, client, scheme }
-}
-
-/**
- * Reclaim whatever's left of the channel's deposit back to the wallet. Called
- * once, at the very end of the job (see agent.yml's "Recover x402inference
- * budget" step) — every run deposits at least a small padded top-up
- * (depositStrategy above), and leaving that sitting in the channel between
- * runs is USDC the spend cap can't see and the operator can't spend elsewhere.
- * A cooperative refund, not a withdrawal: settles immediately, no
- * withdrawDelay wait.
- */
-export async function refundChannel(scheme) {
-  const settle = await scheme.refund(`${GATEWAY_ORIGIN}/accountless/chat/completions`)
-  console.error(`[x402inference] refund: reclaimed ${settle.amount ?? '0'} atomic units`)
-  return settle
+  let bal = await getPrepaidBalance(account.address)
+  if (bal < minUsd) {
+    console.error(`Prepaid balance $${bal} < $${minUsd} — topping up…`)
+    const result = await topUpPrepaid(client, Math.max(0.5, minUsd))
+    bal = parseFloat(result.balance || '0')
+    console.error(`Prepaid balance now $${bal}`)
+  }
+  return { account, client, balance: bal }
 }
 
 /** Turn a non-streaming chat.completion into SSE chunks (opencode always requests stream:true). */
@@ -296,26 +299,36 @@ async function readRequestBody(req, isChat) {
   return out
 }
 
-/** One upstream call: pay (deposit if the channel needs it, voucher-only otherwise) and read the body. */
+/** One upstream call: pay a 402/401/403 and retry, then read the body. */
 async function callUpstream(ctx, bodyBuf) {
   const body = bodyBuf.length ? bodyBuf : undefined
-  const upstream = await payAndRetry(ctx.target, { method: ctx.method, headers: ctx.headers, body }, ctx.client)
+  let upstream = await fetch(ctx.target, { method: ctx.method, headers: ctx.headers, body })
+  if (upstream.status === 402 || upstream.status === 401 || upstream.status === 403) {
+    console.error(`[x402-proxy] ${upstream.status} — paying / retrying…`)
+    Object.assign(ctx.headers, await prepaidHeaders(ctx.auth.account, ctx.subPath))
+    upstream = await payAndRetry(
+      ctx.target,
+      { method: ctx.method, headers: { 'Content-Type': 'application/json' }, body },
+      ctx.auth.client
+    )
+  }
   const text = await upstream.text()
   return { upstream, text, unwrapped: unwrapGateBody(text) }
 }
 
 /**
  * Try one model. A provider error (finish_reason=error, 429, 5xx) is retried
- * once against the SAME model after a short delay — these are usually
- * transient. No re-auth needed: the channel stays valid across retries.
- * Returns the last attempt.
+ * once against the SAME model after topping the prepaid balance back up —
+ * these are usually transient. Returns the last attempt.
  */
 async function tryUpstream(ctx, bodyBuf, model) {
   let result = await callUpstream(ctx, bodyBuf)
   const { upstream, text, unwrapped } = result
   if ((upstream.ok && isFinishError(unwrapped)) || isRetryableHttp(upstream.status)) {
-    console.error(`[x402inference] model=${model} ${summarizeCompletion(unwrapped, text)} — retrying once`)
+    console.error(`[x402gate] model=${model} ${summarizeCompletion(unwrapped, text)} — retrying once`)
     await new Promise((r) => setTimeout(r, 400))
+    ;({ account: ctx.auth.account } = await ensurePrepaid(0.05))
+    Object.assign(ctx.headers, await prepaidHeaders(ctx.auth.account, ctx.subPath))
     result = await callUpstream(ctx, bodyBuf)
   }
   return result
@@ -331,23 +344,23 @@ async function runModelSequence(ctx, reqBody, candidates, isChat) {
   let result = null
   let usedModel = primary
   for (const model of candidates) {
-    if (model !== primary) console.error(`[x402inference] trying fallback model=${model}`)
+    if (model !== primary) console.error(`[x402gate] trying fallback model=${model}`)
     result = await tryUpstream(ctx, isChat ? bodyWithModel(reqBody, model) : reqBody, model)
     usedModel = model
     const { upstream, text, unwrapped } = result
 
     if (upstream.ok && isFinishError(unwrapped) && salvageFinishError(unwrapped)) {
       console.error(
-        `[x402inference] salvaged finish_reason=error → ${unwrapped.choices[0].finish_reason} (model=${model})`
+        `[x402gate] salvaged finish_reason=error → ${unwrapped.choices[0].finish_reason} (model=${model})`
       )
       break
     }
     if (upstream.ok && !isFinishError(unwrapped)) {
-      if (model !== primary) console.error(`[x402inference] fallback succeeded model=${model}`)
+      if (model !== primary) console.error(`[x402gate] fallback succeeded model=${model}`)
       break
     }
     console.error(
-      `[x402inference] model=${model} failed: status=${upstream.status} ${summarizeCompletion(unwrapped, text)}`
+      `[x402gate] model=${model} failed: status=${upstream.status} ${summarizeCompletion(unwrapped, text)}`
     )
   }
   return { ...result, usedModel }
@@ -356,10 +369,10 @@ async function runModelSequence(ctx, reqBody, candidates, isChat) {
 /** Write the gateway's answer back to the agent (SSE when it asked to stream). */
 function convertResponse(res, { upstream, text, unwrapped, usedModel, wantStream }) {
   if (!upstream.ok) {
-    console.error(`[x402inference] upstream ${upstream.status}: ${text.slice(0, 800)}`)
+    console.error(`[x402gate] upstream ${upstream.status}: ${text.slice(0, 800)}`)
   } else {
     console.error(
-      `[x402inference] upstream ${upstream.status} model=${usedModel} (${text.length} bytes) ${summarizeCompletion(unwrapped, text)}`
+      `[x402gate] upstream ${upstream.status} model=${usedModel} (${text.length} bytes) ${summarizeCompletion(unwrapped, text)}`
     )
   }
 
@@ -373,7 +386,7 @@ function convertResponse(res, { upstream, text, unwrapped, usedModel, wantStream
     }
     choice.finish_reason = 'stop'
     delete choice.native_finish_reason
-    console.error(`[x402inference] forced stop after exhausted fallbacks (model=${usedModel})`)
+    console.error(`[x402gate] forced stop after exhausted fallbacks (model=${usedModel})`)
   }
 
   if (wantStream && unwrapped?.choices) {
@@ -389,64 +402,44 @@ function convertResponse(res, { upstream, text, unwrapped, usedModel, wantStream
 
 /**
  * Handle one proxied request: read (and un-stream) the body, try the model
- * sequence, write the answer back. `auth.client` is shared across requests —
- * the batch-settlement channel it holds is what makes repeat requests cheap.
+ * sequence, write the answer back. `auth` is shared across requests because a
+ * top-up mints a fresh account object that later requests should keep using.
  */
 async function handleRequest(auth, req, res) {
   const path = req.url || '/'
   try {
     const isChat = path.includes('chat/completions')
     const { body, wantStream, primaryModel } = await readRequestBody(req, isChat)
-    const sub = path.replace(/^\/v1\//, '')
+    const sub = path.replace(/^\/v1\//, 'openrouter/')
     const ctx = {
-      client: auth.client,
+      auth,
       method: req.method || 'POST',
-      target: `${GATEWAY_ORIGIN}/accountless/${sub}`,
-      headers: { 'Content-Type': req.headers['content-type'] || 'application/json' },
+      target: `${GATEWAY_ORIGIN}/v1/${sub}`,
+      subPath: sub.replace(/^\//, ''),
+      headers: {},
+    }
+    ctx.headers = {
+      'Content-Type': req.headers['content-type'] || 'application/json',
+      ...(await prepaidHeaders(auth.account, ctx.subPath)),
     }
     console.error(
-      `[x402inference] ${req.method} ${path} → ${ctx.target}${wantStream ? ' (stream→buffered)' : ''}`
+      `[x402-proxy] ${req.method} ${path} → ${ctx.target}${wantStream ? ' (stream→buffered)' : ''}`
     )
 
     const attempt = await runModelSequence(ctx, body, pickModelSequence(primaryModel, isChat), isChat)
     convertResponse(res, { ...attempt, wantStream })
   } catch (err) {
-    console.error(`[x402inference] ERROR ${path}:`, err?.stack || err)
+    console.error(`[x402-proxy] ERROR ${path}:`, err?.stack || err)
     res.writeHead(500, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify({ error: String(err?.message || err) }))
   }
 }
 
-/**
- * POST /__refund — local-only, called once by agent.yml's last step to
- * reclaim the channel's unused balance before the job ends. Not under /v1,
- * so it's never reachable through anything an OpenAI-compatible client (or a
- * hostile proposal that only ever talks to PROXY_BASE/v1) could construct.
- */
-async function handleRefundRequest(auth, res) {
-  try {
-    const settle = await refundChannel(auth.scheme)
-    res.writeHead(200, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify(settle))
-  } catch (err) {
-    console.error(`[x402inference] refund failed: ${err?.stack || err}`)
-    res.writeHead(500, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify({ error: String(err?.message || err) }))
-  }
-}
-
-/** Local OpenAI-compatible proxy so the agent can talk to x402inference. */
+/** Local OpenAI-compatible proxy so the agent can talk to x402gate. */
 export async function startProxy(port = 0) {
-  const auth = await ensureAuth() // { account, client, scheme }
-  const server = createServer((req, res) => {
-    if (req.method === 'POST' && req.url === '/__refund') {
-      handleRefundRequest(auth, res)
-      return
-    }
-    handleRequest(auth, req, res)
-  })
+  const auth = await ensurePrepaid(0.05) // { account, client, balance }
+  const server = createServer((req, res) => handleRequest(auth, req, res))
   await new Promise((resolve) => server.listen(port, '127.0.0.1', resolve))
   const addr = server.address()
-  const origin = `http://127.0.0.1:${addr.port}`
-  return { server, port: addr.port, baseUrl: `${origin}/v1`, refundUrl: `${origin}/__refund` }
+  return { server, port: addr.port, baseUrl: `http://127.0.0.1:${addr.port}/v1` }
 }
