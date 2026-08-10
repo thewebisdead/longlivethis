@@ -10,6 +10,7 @@ import { x402Client } from '@x402/fetch'
 import { ExactEvmScheme } from '@x402/evm'
 import { makeAccount } from '../lib/wallet.mjs'
 import { USDC_BASE } from '../lib/constants.mjs'
+import { makeNanoGptClient, toNanoGptModel, callNanoGpt } from './nanogpt.mjs'
 
 export { makeAccount }
 
@@ -59,7 +60,9 @@ async function initSpendCap(account) {
   }
 }
 
-async function assertSpendAllowed() {
+// Exported for nanogpt.mjs: one spend-cap authority for the one wallet,
+// whichever provider ends up getting paid.
+export async function assertSpendAllowed() {
   if (spendFloorUsd === null) return
   let bal
   try {
@@ -334,10 +337,49 @@ async function tryUpstream(ctx, bodyBuf, model) {
   return result
 }
 
+// Lazily built once per proxy process: same wallet account as x402gate.io,
+// registered against NanoGPT's plain x402 exact-EVM scheme.
+let nanoGptClient = null
+
+/**
+ * Every x402gate.io candidate in `candidates` failed outright (not merely a
+ * salvageable finish_reason=error — see runModelSequence). Try the same
+ * models against NanoGPT (nanogpt.mjs), the second x402-accepting provider on
+ * this wallet's own chain/asset, before the run gives up entirely. Returns
+ * null if NanoGPT also produced nothing usable, so the caller falls back to
+ * its existing exhausted-x402gate.io result (and its forced-stop message).
+ */
+async function tryNanoGptFallback(ctx, reqBody, candidates) {
+  console.error('[x402gate] all x402gate.io candidates failed — falling back to NanoGPT')
+  nanoGptClient = nanoGptClient || makeNanoGptClient(ctx.auth.account)
+  for (const model of candidates) {
+    const ngModel = toNanoGptModel(model)
+    let result
+    try {
+      result = await callNanoGpt(nanoGptClient, bodyWithModel(reqBody, ngModel), assertSpendAllowed)
+    } catch (e) {
+      console.error(`[nanogpt] model=${ngModel} request failed: ${e?.message || e}`)
+      continue
+    }
+    const { upstream, text, unwrapped } = result
+    if (upstream.ok && isFinishError(unwrapped) && salvageFinishError(unwrapped)) {
+      console.error(`[nanogpt] salvaged finish_reason=error → ${unwrapped.choices[0].finish_reason} (model=${ngModel})`)
+      return { ...result, usedModel: model }
+    }
+    if (upstream.ok && !isFinishError(unwrapped)) {
+      console.error(`[nanogpt] fallback succeeded model=${ngModel}`)
+      return { ...result, usedModel: model }
+    }
+    console.error(`[nanogpt] model=${ngModel} failed: status=${upstream.status} ${summarizeCompletion(unwrapped, text)}`)
+  }
+  return null
+}
+
 /**
  * Walk the model sequence until one answers usefully. Returns the last
  * attempt plus the model that produced it (`usedModel`) — which, when every
- * candidate failed, is the last one tried.
+ * candidate failed against BOTH providers, is the last one tried against
+ * x402gate.io (so convertResponse's forced-stop message still applies).
  */
 async function runModelSequence(ctx, reqBody, candidates, isChat) {
   const primary = candidates[0]
@@ -353,15 +395,19 @@ async function runModelSequence(ctx, reqBody, candidates, isChat) {
       console.error(
         `[x402gate] salvaged finish_reason=error → ${unwrapped.choices[0].finish_reason} (model=${model})`
       )
-      break
+      return { ...result, usedModel }
     }
     if (upstream.ok && !isFinishError(unwrapped)) {
       if (model !== primary) console.error(`[x402gate] fallback succeeded model=${model}`)
-      break
+      return { ...result, usedModel }
     }
     console.error(
       `[x402gate] model=${model} failed: status=${upstream.status} ${summarizeCompletion(unwrapped, text)}`
     )
+  }
+  if (isChat) {
+    const fromNanoGpt = await tryNanoGptFallback(ctx, reqBody, candidates)
+    if (fromNanoGpt) return fromNanoGpt
   }
   return { ...result, usedModel }
 }
