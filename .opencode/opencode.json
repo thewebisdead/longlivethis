@@ -1,0 +1,29 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "permission": "allow",
+  "provider": {
+    "x402gate": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "x402gate",
+      "options": {
+        "baseURL": "http://127.0.0.1:33905/v1",
+        "apiKey": "x402"
+      },
+      "models": {
+        "deepseek/deepseek-v4-flash-0731": {
+          "name": "deepseek/deepseek-v4-flash-0731",
+          "limit": {
+            "context": 128000,
+            "output": 16384
+          },
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cache_read": 0,
+            "cache_write": 0
+          }
+        }
+      }
+    }
+  }
+}

@@ -70,23 +70,42 @@ feature needs something you don't have, get it. Check the opencode docs at
   environment) when a feature needs them.
 - Add services to `docker-compose.yml` and wire them in `scripts/deploy.sh`
   when a feature needs infrastructure.
-- Delegate to a subagent on a different model when a task warrants it. Use the
-  `task` tool; subagents are a native opencode primitive, so this needs no
-  extension. The frozen step declares only the base model, but the payment proxy
-  forwards whatever model a request names, within the same spend cap — so a
-  cheaper model for mechanical work or a stronger one for a hard change is a
-  config change, not new plumbing. The full models.dev catalogue is loaded at
-  startup, so you can look up what exists, its context window and its real cost
-  rather than guessing.
+- Delegate mechanical subtasks to a cheaper verified model. The frozen step
+  runs you on one base model (`INFERENCE_MODEL`); delegation is how you spend
+  less on self-contained mechanical work (small refactors, test updates,
+  dependency fiddling, doc rephrasing) while you keep planning, review, and
+  commit on the base model. The mechanism is already wired:
+
+  - `.opencode/agents/cheap-delegate.md` defines a `subagent` pinned to a
+    cheaper code model, and `.opencode/opencode.json` registers that model in
+    the `x402gate` provider map (opencode only routes to a model id that is
+    registered — an unregistered id fails the delegation with `Model not
+    found`). Both files merge in at session start over the config the frozen
+    step writes, and delegation goes through the same local proxy under the
+    same spend cap — it pockets savings, never new access.
+  - `scripts/model-pricing.mjs` (agent-owned, NOT frozen) picks the cheapest
+    candidate from live pricing (OpenRouter's public model list), smoke-checks
+    it through `$PROXY_BASE`, and — only if it replies AND the pinned agent
+    file matches — prints `DELEGATE_MODEL`, `DELEGATE_AGENT`, `DELEGATE_PRICE`.
+    Run it at the start of Phase 2 before any large piece of work:
+    `node scripts/model-pricing.mjs` (it needs `PROXY_BASE` and `INFERENCE_MODEL`
+    in the environment, both present here).
+  - To delegate: run the script, then `task` with `subagent_type` equal to the
+    reported `DELEGATE_AGENT` (currently `cheap-delegate`). If the script exits
+    nonzero (no live pricing, no routable candidate, or the smoke test failed),
+    just continue on the base model — delegation is an optimization, never a
+    hard dependency.
 
   **Verify a model before you rely on it.** Naming a model in config proves
   nothing: an unreachable or misnamed id fails at the moment of use, often
-  silently. Before delegating real work to a model you have not used here
-  before, send it a trivial prompt through the proxy and confirm you get a
-  response back. A past proposal registered `deepseek/deepseek-prover-v2` for
-  "cheaper implementation" — a Lean theorem prover, never actually invoked — and
-  the run cost exactly as much as before. Registering is not using; if you did
-  not see a reply, it does not work.
+  silently. The pricing script's smoke test exists exactly for this — a model
+  the proxy does not actually serve is never delegated to. A past proposal
+  registered `deepseek/deepseek-prover-v2` for "cheaper implementation" — a
+  Lean theorem prover, never actually invoked — and the run cost exactly as
+  much as before. Registering is not using; if you did not see a reply, it
+  does not work. If you want another delegate model, add it to the allowlist in
+  `scripts/model-pricing.mjs` **and** pin it in the agent file — never register
+  without using.
 - Trigger agent runs from the app. The workflow only runs a daily sweep by
   itself; the app's `GITHUB_APP_*` credentials include `actions: write`, so
   app code may dispatch an immediate run
