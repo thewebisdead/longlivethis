@@ -55,10 +55,22 @@ AGENT_PROMPT="$(render_template "$PROMPTS_DIR/implement.tmpl" \
 # entry for a private "x402gate" provider — the catalogue opencode downloads at
 # startup describes public providers, never this one, so without these
 # autocompact would have nothing to work from for the base model.
+#
+# permission: "allow" — normalized by opencode to {"*": "allow"}, i.e. every
+# tool, every pattern, no prompts. This is deliberate. The run is
+# NON-INTERACTIVE: there is no human at the other end of a permission prompt,
+# so opencode's default ("ask" for anything unmatched) resolves to
+# auto-rejecting mid-run — a sweep once died because the agent ran a bash
+# command touching /tmp and lost the tool call, then gave up with no commits.
+# Nothing is being conceded by allowing everything: containment here is the uid
+# sandbox (agentuser, sudo-less, cannot read the proxy's environ) and the fact
+# that this step holds no credentials, not opencode's own permission list —
+# which the agent could not be blocked by anyway once it has bash.
 export OPENCODE_CONFIG_DIR="${OPENCODE_CONFIG_DIR:-$REPO_ROOT/.opencode-agent}"
 mkdir -p "$OPENCODE_CONFIG_DIR"
 jq -n --arg base "$PROXY_BASE" --arg m "$MODEL" '{
   "$schema": "https://opencode.ai/config.json",
+  permission: "allow",
   provider: { x402gate: {
     npm: "@ai-sdk/openai-compatible", name: "x402gate",
     options: { baseURL: $base, apiKey: "x402" },
