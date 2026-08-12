@@ -166,8 +166,21 @@ function isFinishError(unwrapped) {
   return unwrapped?.choices?.[0]?.finish_reason === 'error'
 }
 
+/**
+ * 402 counts as retryable, not fatal: on a channel-based provider it is what a
+ * gateway answers while the escrow channel is momentarily unavailable (a batch
+ * settlement in progress), and handing that straight back ends the whole agent
+ * session. A 402 that means "this wallet cannot pay" simply fails again on the
+ * retry, having spent nothing.
+ */
 function isRetryableHttp(status) {
-  return status === 429 || status >= 500
+  return status === 402 || status === 429 || status >= 500
+}
+
+/** Backoff before the single same-model retry. A busy payment channel needs
+ *  longer than a rate limit to clear. */
+function retryDelayMs(status) {
+  return status === 402 ? 2000 : 400
 }
 
 function salvageFinishError(unwrapped) {
@@ -231,8 +244,10 @@ async function tryUpstream(ctx, bodyBuf, model) {
   let result = await callUpstream(ctx, bodyBuf)
   const { upstream, text, unwrapped } = result
   if ((upstream.ok && isFinishError(unwrapped)) || isRetryableHttp(upstream.status)) {
-    console.error(`[proxy] model=${model} ${summarizeCompletion(unwrapped, text)} — retrying once`)
-    await new Promise((r) => setTimeout(r, 400))
+    console.error(
+      `[proxy] model=${model} status=${upstream.status} ${summarizeCompletion(unwrapped, text)} — retrying once`
+    )
+    await new Promise((r) => setTimeout(r, retryDelayMs(upstream.status)))
     await ctx.session.refresh()
     result = await callUpstream(ctx, bodyBuf)
   }
@@ -275,6 +290,11 @@ async function runModelSequence(ctx, reqBody, candidates, isChat) {
 function convertResponse(res, { upstream, text, unwrapped, usedModel, wantStream }) {
   if (!upstream.ok) {
     console.error(`[proxy] upstream ${upstream.status}: ${text.slice(0, 800)}`)
+    // A payment failure often carries an empty body ("{}"), with the gateway's
+    // actual reason only in the headers — log them so the next one is diagnosable.
+    if (upstream.status === 402) {
+      console.error(`[proxy] 402 headers: ${JSON.stringify(Object.fromEntries(upstream.headers))}`)
+    }
   } else {
     console.error(
       `[proxy] upstream ${upstream.status} model=${usedModel} (${text.length} bytes) ${summarizeCompletion(unwrapped, text)}`

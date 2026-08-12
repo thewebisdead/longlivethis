@@ -16,6 +16,7 @@ import { base } from 'viem/chains'
 import { x402Client, wrapFetchWithPayment } from '@x402/fetch'
 import { BatchSettlementEvmScheme, toClientEvmSigner } from '@x402/evm'
 import { assertSpendAllowed, invalidateSpendCache } from '../spend-cap.mjs'
+import { createSerializer } from '../serialize.mjs'
 
 /**
  * How much headroom each on-chain deposit buys, as a multiple of the offer's
@@ -29,6 +30,32 @@ import { assertSpendAllowed, invalidateSpendCache } from '../spend-cap.mjs'
  * behave as designed: one deposit, many voucher-only requests, refund the rest.
  */
 const DEPOSIT_MULTIPLIER = 5
+
+/**
+ * Absolute floor for any deposit, in atomic USDC units — 2x the gateway's
+ * measured `amount_too_low` cutoff of 1000 ($0.001).
+ *
+ * The multiplier alone does NOT clear that cutoff: the SDK computes
+ * `depositMultiplier * requestAmount`, and a cheap route's per-request ceiling
+ * is small enough that 5x it still lands under 1000, so the FIRST top-up on a
+ * partly-funded channel would be rejected even though the initial deposit went
+ * through. The floor below is what makes every deposit — first and subsequent —
+ * a legal one.
+ */
+const DEPOSIT_FLOOR_ATOMIC = 2000n
+
+/**
+ * Size a deposit: the SDK's multiplier-derived amount, raised to the dust floor,
+ * and never below the shortfall the request actually needs (the SDK rejects a
+ * strategy that returns less than `minimumDepositAmount`).
+ */
+function depositStrategy(context) {
+  const computed = BigInt(context.depositAmount)
+  const minimum = BigInt(context.minimumDepositAmount)
+  let amount = computed > DEPOSIT_FLOOR_ATOMIC ? computed : DEPOSIT_FLOOR_ATOMIC
+  if (amount < minimum) amount = minimum
+  return amount.toString()
+}
 
 /** Map a local proxy path (`/v1/chat/completions`) onto the gateway's path. */
 function targetUrl(baseUrl, path) {
@@ -50,9 +77,24 @@ export const x402inference = {
     const signer = toClientEvmSigner(account, publicClient)
     const scheme = new BatchSettlementEvmScheme(signer, {
       depositPolicy: { depositMultiplier: DEPOSIT_MULTIPLIER },
+      depositStrategy,
     })
     const client = new x402Client().register('eip155:8453', scheme)
     const pay = wrapFetchWithPayment(fetch, client)
+
+    // A batch-settlement channel is STATEFUL on the client side: every voucher
+    // is signed against the channel's running total (`chargedCumulativeAmount`
+    // plus this request's amount) read out of the scheme's local storage, and a
+    // deposit is signed against the balance read at the same moment. Two
+    // payments in flight at once therefore both read the same running total,
+    // both sign the same cumulative claim, and both try to open/top up the same
+    // channel — which the gateway answers with a bare 402
+    // (`invalid_batch_settlement_evm_channel_busy`), killing the agent run.
+    // opencode's implement session fires concurrent model calls as a matter of
+    // course, so this is not a rare race: one payment must fully land (payload
+    // signed, upstream answered, local channel state updated) before the next
+    // one starts.
+    const serialize = createSerializer()
 
     return {
       /**
@@ -61,8 +103,10 @@ export const x402inference = {
        * rather than at the moment of payment.
        */
       async fetch(url, init) {
-        await assertSpendAllowed()
-        return pay(url, init)
+        return serialize(async () => {
+          await assertSpendAllowed()
+          return pay(url, init)
+        })
       },
 
       /** Nothing to refresh: the scheme tops the channel up on its own. */
@@ -78,7 +122,10 @@ export const x402inference = {
        */
       async close() {
         try {
-          const settle = await scheme.refund(targetUrl(baseUrl, 'chat/completions'))
+          // Through the same queue: a refund issued while a payment is still in
+          // flight is exactly the "channel busy" collision above, and it would
+          // strand the deposit instead of reclaiming it.
+          const settle = await serialize(() => scheme.refund(targetUrl(baseUrl, 'chat/completions')))
           console.error(`[x402inference] refunded unused channel balance: ${JSON.stringify(settle).slice(0, 300)}`)
         } catch (e) {
           console.error(`[x402inference] refund failed (balance stays in the channel): ${e?.message || e}`)
