@@ -41,6 +41,9 @@ export default async function Home({
         The web is dead, <a className='hover:underline' href='#'>longlivethis.site</a>!
       </p>
       <p className="mb-5 text-[0.8rem] flex gap-4 flex-wrap">
+        <a href="/runs" className="text-muted underline underline-offset-2 hover:text-fg">
+          Runs
+        </a>
         {repoUrl && (
           <>
             <a
