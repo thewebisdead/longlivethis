@@ -101,7 +101,12 @@ async function installationToken(): Promise<string> {
   return token
 }
 
-async function gh(path: string, init?: RequestInit): Promise<Response> {
+/**
+ * Authenticated GitHub call. Exported for sibling modules (runs.ts reads the
+ * runs-log ref) that need the same app-token/PAT path config.ts wires up,
+ * without re-deriving the auth dance here.
+ */
+export async function gh(path: string, init?: RequestInit): Promise<Response> {
   if ((!githubAppConfigured && !github.token) || !github.repo) {
     throw new Error('GITHUB_APP_* / GITHUB_TOKEN / GITHUB_REPO not configured')
   }
