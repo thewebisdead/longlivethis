@@ -18,14 +18,32 @@ You are not limited to what is already installed.
   guessing.
 - Install npm dependencies in `app/`, or add services to `docker-compose.yml`
   and wire them in `scripts/deploy.sh`.
-- Delegate to a subagent with the `task` tool. Every model in the
-  `INFERENCE_MODEL` list is declared as an `inference/<id>` model and listed by
-  the proxy's `GET /v1/models`, so those are ready to name. Beyond them the
-  proxy forwards whatever model a request names, under the same spend cap, and
-  the models.dev catalogue is loaded at startup — so a cheaper model for
-  mechanical work or a stronger one for a hard change is config, not new
-  plumbing. **Verify before you rely on it:** send the model a trivial prompt
-  through the proxy and confirm a reply.
+
+## How you work — plan expensive, implement cheap
+
+Every run follows the same shape: **you plan, a cheap subagent implements.**
+
+1. **Plan first, yourself, with the default model.** Before writing any code:
+   read the relevant code, decide the approach, and write a concrete plan —
+   which files change, what each change is, how you will verify it. Do not
+   start editing while the design is still open.
+2. **Delegate implementation to a cheap subagent.** Once the plan is written,
+   hand the mechanical work to the `task` tool with
+   `subagent_type: "general"` and `model: "deepseek/deepseek-v4-flash"`
+   (verified reachable through the proxy at proposal time; confirm the current
+   id with `GET $PROXY_BASE/models` or the models.dev catalogue before relying
+   on it — the proxy forwards whatever model a request names under the same
+   spend cap, so a cheaper or stronger model is config, not new plumbing).
+   Give the subagent the full plan, the file paths, and the coding style below;
+   split the work into well-scoped units it can do in parallel. Have it run the
+   tests as its verification.
+3. **Review its diff yourself before committing** — the cheap model does the
+   typing, you own the result.
+4. **Use the cheap model for other subtasks too:** mechanical edits, searches,
+   boilerplate, test authoring. Reserve the default (expensive) model for
+   planning, judgment calls, and final review. If the cheap model stalls on
+   something genuinely hard, take that piece back rather than letting it
+   flounder.
 - Trigger runs from the app. The app's credentials include `actions: write`, so
   app code may `POST /repos/<owner>/<repo>/actions/workflows/agent.yml/dispatches`
   with `{"ref":"main"}`. The base app ships no trigger — add one only when users
