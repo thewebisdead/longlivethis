@@ -81,7 +81,7 @@ export default function RunTranscript({ run }: { run: Run }) {
           <span className="flex flex-wrap gap-x-4 gap-y-0.5 text-[0.68rem] text-muted mt-0.5">
             {run.startedAt && <span>{new Date(run.startedAt).toISOString().slice(0, 16).replace('T', ' ')}Z</span>}
             {run.model && <span>{run.model}</span>}
-            {run.outcome && <span className={run.outcome === 'committed' ? '' : 'text-amber-400'}>{run.outcome}</span>}
+            {run.outcome && <span className={run.outcome === 'committed' ? '' : 'text-amber-400'}>{run.outcome === 'committed' ? '✅' : '⚠️'} {run.outcome}</span>}
             {run.cost && <span>{run.cost}</span>}
           </span>
         </span>

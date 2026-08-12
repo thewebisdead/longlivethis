@@ -22,7 +22,7 @@ function VoteButton({ issue, dir }: { issue: number; dir: 'up' | 'down' }) {
       aria-label={up ? 'Vote for' : 'Vote against'}
       className="block px-2 leading-none text-base text-muted hover:text-fg focus:text-fg focus:outline-none"
     >
-      {up ? '▲' : '▼'}
+      {up ? '👍' : '👎'}
     </a>
   )
 }
@@ -32,16 +32,18 @@ export default function ProposalFeed({ proposals }: { proposals: Proposal[] }) {
 
   return (
     <div>
-      <h2 className="text-[0.8rem] tracking-widest text-muted uppercase mt-8 mb-4">Proposals</h2>
+      <h2 className="text-[0.8rem] tracking-widest uppercase mt-8 mb-4 rainbow-text font-bold">
+        🎨 Proposals 🎨
+      </h2>
       {rows.length > 0 && (
         <p className="text-[0.72rem] text-muted mb-4">
-          Vote with ▲ / ▼ — you sign in with GitHub once, then land straight back here. Click a
+          Vote with 👍 / 👎 — you sign in with GitHub once, then land straight back here. Click a
           proposal to read the discussion.
         </p>
       )}
       {rows.length === 0 ? (
         <p className="text-muted text-[0.85rem] text-center my-12">
-          Nothing to implement yet :( Propose something!
+          Nothing to implement yet 🥺 Propose something! ✨
         </p>
       ) : (
         rows.map((p) => (
@@ -55,7 +57,7 @@ export default function ProposalFeed({ proposals }: { proposals: Proposal[] }) {
             <span className="flex flex-col items-center gap-1 shrink-0">
               <VoteButton issue={p.id} dir="up" />
               <span className="inline-block font-mono font-bold text-[0.75rem] px-[0.6rem] py-[0.4rem] min-w-[3rem] text-center tabular-nums">
-                {p.votes}
+                ⭐ {p.votes}
               </span>
               <VoteButton issue={p.id} dir="down" />
             </span>

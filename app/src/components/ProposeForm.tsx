@@ -30,14 +30,14 @@ export default function ProposeForm() {
       <textarea
         value={text}
         onChange={(e) => setText(e.target.value)}
-        placeholder="Propose a feature that helps this app survive"
-        className="w-full bg-bg border border-fg text-fg font-mono text-[0.9rem] p-3 resize-y min-h-[72px] placeholder:text-muted focus:outline-none"
+        placeholder="✨ Propose a feature that helps this app survive 💡"
+        className="w-full rainbow-border text-fg font-mono text-[0.9rem] p-3 resize-y min-h-[72px] placeholder:text-muted focus:outline-none"
       />
       <button
         onClick={submit}
-        className="mt-3 bg-fg text-bg border border-fg px-[1.1rem] py-[0.55rem] text-[0.85rem] font-semibold cursor-pointer hover:bg-bg hover:text-fg"
+        className="mt-3 rainbow-border px-[1.1rem] py-[0.55rem] text-[0.85rem] font-semibold cursor-pointer hover:bg-bg"
       >
-        Submit
+        🚀 Submit 🌈
       </button>
     </div>
   )

@@ -11,7 +11,7 @@ export default async function RunsPage() {
 
   return (
     <main className="flex-1 w-full max-w-180 mx-auto px-6 py-12">
-      <p className="text-[1.35rem] font-bold leading-tight mb-1">Runs</p>
+      <p className="text-[1.35rem] font-bold leading-tight mb-1 rainbow-text">🏃 Runs 🏃</p>
       <p className="text-[0.8rem] text-muted mb-8">
         A public, transcript-style log of past agent implement runs — stored on
         the <code className="text-fg">{RUNS_REF}</code> ref, one JSONL file per
@@ -33,7 +33,7 @@ export default async function RunsPage() {
 
       {runs.length === 0 ? (
         <p className="text-muted text-[0.85rem] text-center my-12">
-          No runs recorded yet. The next implemented proposal will appear here.
+          No runs recorded yet. The next implemented proposal will appear here. 🤖✨
         </p>
       ) : (
         <div className="space-y-3">

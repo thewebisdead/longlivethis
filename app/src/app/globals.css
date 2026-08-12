@@ -7,11 +7,86 @@
   --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace;
 }
 
-/* Rainbow theme: a thin animated gradient bar up top, gradient text for the
-   headline, and a rainbow hover sweep on proposal rows. All driven by one
-   keyframe so the palette only has to be tuned in one place, and every
-   animated bit backs off to something static for users who asked for less
-   motion. */
+/* Kaleidoscope background: two counter-rotating, blurred conic-gradient
+   layers fixed behind the whole page, cycling hue as they spin. Kept dim so
+   the terminal look stays readable on top of the colors. */
+@keyframes kaleido-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes kaleido-spin-rev {
+  to {
+    transform: rotate(-360deg);
+  }
+}
+
+@keyframes hue-cycle {
+  to {
+    filter: hue-rotate(360deg);
+  }
+}
+
+.kaleidoscope {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  background: #000;
+  pointer-events: none;
+}
+
+.kaleidoscope::before,
+.kaleidoscope::after {
+  content: "";
+  position: absolute;
+  inset: -60vmax;
+  filter: blur(60px) saturate(1.6);
+}
+
+.kaleidoscope::before {
+  background: repeating-conic-gradient(
+    from 0deg at 35% 45%,
+    #ff0040 0deg 30deg,
+    #ff8c00 30deg 60deg,
+    #ffee00 60deg 90deg,
+    #00e065 90deg 120deg,
+    #00c2ff 120deg 150deg,
+    #7a5cff 150deg 180deg,
+    #ff2fd0 180deg 210deg,
+    #ff0040 210deg 240deg,
+    #ff8c00 240deg 270deg,
+    #ffee00 270deg 300deg,
+    #00e065 300deg 330deg,
+    #00c2ff 330deg 360deg
+  );
+  opacity: 0.28;
+  animation:
+    kaleido-spin 90s linear infinite,
+    hue-cycle 30s linear infinite;
+}
+
+.kaleidoscope::after {
+  background: repeating-conic-gradient(
+    from 15deg at 65% 55%,
+    #00c2ff 0deg 45deg,
+    #ff2fd0 45deg 90deg,
+    #ffee00 90deg 135deg,
+    #7a5cff 135deg 180deg,
+    #00e065 180deg 225deg,
+    #ff0040 225deg 270deg,
+    #00c2ff 270deg 315deg,
+    #ff8c00 315deg 360deg
+  );
+  opacity: 0.18;
+  animation:
+    kaleido-spin-rev 120s linear infinite,
+    hue-cycle 45s linear infinite reverse;
+}
+
+/* One shared keyframe drives every animated rainbow gradient so the palette
+   only has to be tuned in one place. */
 @keyframes rainbow-shift {
   0% {
     background-position: 0% 50%;
@@ -57,6 +132,32 @@
   animation: rainbow-shift 6s linear infinite;
 }
 
+/* Animated rainbow border: black fill on padding-box, rainbow gradient
+   clipped to the border-box. Drop onto anything that had `border border-fg`.
+   Also forces an opaque backdrop so the kaleidoscope never shows through
+   text-bearing panels. */
+.rainbow-border {
+  border: 1px solid transparent;
+  background:
+    linear-gradient(#000, #000) padding-box,
+    linear-gradient(
+        90deg,
+        #ff0040,
+        #ff8c00,
+        #ffee00,
+        #00e065,
+        #00c2ff,
+        #7a5cff,
+        #ff2fd0,
+        #ff0040
+      )
+      border-box;
+  background-size:
+    100% 100%,
+    200% 100%;
+  animation: rainbow-shift 8s linear infinite;
+}
+
 .rainbow-hover {
   position: relative;
 }
@@ -86,9 +187,16 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .kaleidoscope::before,
+  .kaleidoscope::after,
   .rainbow-bar,
-  .rainbow-text {
+  .rainbow-text,
+  .rainbow-border {
     animation: none;
+  }
+  .rainbow-bar,
+  .rainbow-text,
+  .rainbow-border {
     background-size: 100% 100%;
   }
 }
