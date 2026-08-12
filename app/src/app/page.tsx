@@ -1,6 +1,6 @@
 import ProposeForm from '@/components/ProposeForm'
 import ProposalFeed from '@/components/ProposalFeed'
-import { repoUrl, walletAddress } from '@/lib/config'
+import { basescanUrl, repoUrl, walletAddress } from '@/lib/config'
 import { listProposals } from '@/lib/github'
 import { getUsdcBalance } from '@/lib/treasury'
 
@@ -35,6 +35,16 @@ export default async function Home({
           {balance === null ? '…' : `$${balance.toFixed(2)}`}
         </p>
         <p className="mt-3 text-xs tracking-[0.18em] uppercase text-muted">treasury · USDC</p>
+        {walletAddress && (
+          <a
+            href={`${basescanUrl}/address/${walletAddress}`}
+            target="_blank"
+            rel="noopener"
+            className="mt-3 inline-block text-xs text-muted underline underline-offset-2 hover:text-fg"
+          >
+            View transactions on BaseScan
+          </a>
+        )}
       </div>
 
       <p className="text-[1.35rem] font-bold leading-tight mb-2">
