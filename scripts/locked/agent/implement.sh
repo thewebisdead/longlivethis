@@ -2,10 +2,15 @@
 # FROZEN at init — step 4: run the implementation.
 #
 # A single frozen opencode run. There is no agent-owned implementation layer, so
-# nothing here can be broken into bricking the loop. The prompt
-# (prompts/implement.tmpl) carries the proposal and the few non-negotiable
-# reminders; opencode also reads the repo's AGENTS.md automatically — that is
-# where users tune style, extra rules, and approach.
+# nothing here can be broken into bricking the loop.
+#
+# The agent's instructions come from two places. prompts/implement.tmpl is
+# FROZEN and carries everything non-negotiable: the proposal, the sandbox it is
+# running in, the run contract, the frozen-path list, and the life-support
+# rules. The repo's AGENTS.md, which opencode reads automatically, carries only
+# user-tunable advice — style, capabilities, layout. The template states that it
+# outranks AGENTS.md, so an emptied, corrupted or hostile AGENTS.md costs the
+# run advice, never the rules; nothing here depends on that file existing.
 #
 # Runs with NO credentials: GH_TOKEN is never set on this step, and no wallet
 # key exists in this environment — inference is paid only through the proxy.
@@ -38,6 +43,11 @@ MODEL="$(require_model)"
 # agent's own runtime, not on the proposal.
 RUN_TIMEOUT="${IMPLEMENT_TIMEOUT:-3600}"
 
+# How many times a run that DIED BY SIGNAL is resumed (see oc_stream). One by
+# default: enough to survive a self-inflicted kill, not enough to burn the
+# budget re-running the same fatal command. 0 disables resuming entirely.
+RESUME_TRIES="${IMPLEMENT_RESUMES:-1}"
+
 PROPOSAL_TEXT="$(state_get proposal_sanitized)"
 BRANCH="$(state_get branch)"
 PRIOR_SECTION="$(state_get prior_section)"
@@ -49,12 +59,23 @@ AGENT_PROMPT="$(render_template "$PROMPTS_DIR/implement.tmpl" \
 # Register the proxy as an OpenAI-compatible provider (cost 0 — the proxy has
 # already paid the x402 charge). @ai-sdk/openai-compatible is compiled into the
 # opencode binary, so naming it here pulls nothing from a registry at run time.
-# PROXY_BASE already ends in /v1 (x402gate.mjs publishes it that way and
+# PROXY_BASE already ends in /v1 (inference-proxy.mjs publishes it that way and
 # agent.yml reads it straight from the port file) — do not append it again.
 # The context/output limits are stated explicitly because models.dev has no
-# entry for a private "x402gate" provider — the catalogue opencode downloads at
+# entry for a private "inference" provider — the catalogue opencode downloads at
 # startup describes public providers, never this one, so without these
 # autocompact would have nothing to work from for the base model.
+#
+# The provider is named "inference", not after whichever gateway is paying:
+# which gateway that is comes from the INFERENCE_PROVIDER repo variable and can
+# change without the agent's model ids ("inference/<model>") changing with it.
+#
+# EVERY configured model is declared, not just the primary: the whole
+# INFERENCE_MODEL list is what the proxy is willing to route and pay for (it
+# retries down the list itself), so declaring all of them lets the agent name a
+# sibling model — e.g. hand a cheap subtask to a smaller one via the task tool —
+# instead of being pinned to the one id it was launched with. The proxy's
+# GET /v1/models serves the same list, so config and endpoint agree.
 #
 # permission: "allow" — normalized by opencode to {"*": "allow"}, i.e. every
 # tool, every pattern, no prompts. This is deliberate. The run is
@@ -68,14 +89,17 @@ AGENT_PROMPT="$(render_template "$PROMPTS_DIR/implement.tmpl" \
 # which the agent could not be blocked by anyway once it has bash.
 export OPENCODE_CONFIG_DIR="${OPENCODE_CONFIG_DIR:-$REPO_ROOT/.opencode-agent}"
 mkdir -p "$OPENCODE_CONFIG_DIR"
-jq -n --arg base "$PROXY_BASE" --arg m "$MODEL" '{
+require_models | jq -R -s --arg base "$PROXY_BASE" '
+(split("\n") | map(select(length > 0))) as $ms | {
   "$schema": "https://opencode.ai/config.json",
   permission: "allow",
-  provider: { x402gate: {
-    npm: "@ai-sdk/openai-compatible", name: "x402gate",
+  provider: { inference: {
+    npm: "@ai-sdk/openai-compatible", name: "inference",
     options: { baseURL: $base, apiKey: "x402" },
-    models: { ($m): { name: $m, limit: { context: 128000, output: 16384 },
-                      cost: { input: 0, output: 0, cache_read: 0, cache_write: 0 } } }
+    models: ($ms | map({ key: ., value: {
+                name: ., limit: { context: 128000, output: 16384 },
+                cost: { input: 0, output: 0, cache_read: 0, cache_write: 0 } } })
+             | from_entries)
   } }
 }' > "$OPENCODE_CONFIG_DIR/opencode.json"
 
@@ -120,10 +144,9 @@ OC_FLAGS=(
 # Run opencode ("$@" is the launcher: sudo/env wrapper + "$OC_BIN") and stream
 # its full activity to the CI log. --format json emits every event (assistant
 # text, tool calls + results) as one JSON object per line — printed raw. The
-# stream is also kept in $RAW because opencode EXITS 0 EVEN WHEN THE MODEL
-# ERRORS: a non-retryable failure (e.g. a bad model id -> 400 model_not_found)
-# appears only as a top-level {"type":"error"} event in the stream. Trusting the
-# exit code alone would let a broken model silently "succeed" with no work done.
+# stream is also kept on disk: it is where the session id and any error event
+# are read from afterwards (see oc_stream). One file per attempt, so a resume
+# does not overwrite the record of what killed the previous one.
 #
 # --model belongs to the `run` subcommand, so it is appended here rather than
 # by the callers. --kill-after: the timeout signals the sudo wrapper, which does
@@ -136,24 +159,94 @@ OC_FLAGS=(
 # fallback below).
 RAW="${RUNNER_TEMP:-/tmp}/opencode-events.jsonl"
 if command -v timeout >/dev/null 2>&1; then
-  TIMEOUT_CMD=(timeout --signal=INT --kill-after=60 "$RUN_TIMEOUT")
+  HAS_TIMEOUT=1
 else
   echo "::warning::coreutils 'timeout' not found — running opencode WITHOUT a wall-clock bound; a silently-retrying upstream error will hang until the job timeout."
-  TIMEOUT_CMD=()
+  HAS_TIMEOUT=0
 fi
 
-oc_stream() {
+# The opencode session id, carried on every event in the stream. Needed to
+# resume a killed run; the first event is enough.
+session_of() { grep -o '"sessionID":"[^"]*"' "$1" 2>/dev/null | head -1 | cut -d'"' -f4; }
+
+# One opencode invocation: oc_launch BUDGET RAWFILE PROMPT SESSION LAUNCHER...
+# An empty SESSION starts a new session; otherwise the run resumes that one.
+oc_launch() {
+  local budget="$1" raw="$2" prompt="$3" sid="$4"; shift 4
   local rc=0
-  # ${arr[@]+"${arr[@]}"}: expands to nothing when TIMEOUT_CMD is empty without
+  local -a t=() s=()
+  [ "$HAS_TIMEOUT" -eq 1 ] && t=(timeout --signal=INT --kill-after=60 "$budget")
+  [ -n "$sid" ] && s=(--session "$sid")
+  # ${arr[@]+"${arr[@]}"}: expands to nothing when the array is empty without
   # tripping `set -u` on bash 3.2 (macOS); runners ship bash 5, self-hosted may not.
-  { ${TIMEOUT_CMD[@]+"${TIMEOUT_CMD[@]}"} "$@" run --model "x402gate/$MODEL" \
-      --format json "$AGENT_PROMPT" | tee "$RAW"; } || rc=$?
-  if [ "$rc" -eq 124 ]; then
-    echo "::error::opencode exceeded the ${RUN_TIMEOUT}s implementation timeout (silent upstream retries?)"; return 1
+  { ${t[@]+"${t[@]}"} "$@" run ${s[@]+"${s[@]}"} --model "inference/$MODEL" \
+      --format json "$prompt" | tee "$raw"; } || rc=$?
+  return "$rc"
+}
+
+# Run the implementation to completion, resuming across an abnormal death.
+#
+# A run can be killed from INSIDE the sandbox: the agent's own shell commands
+# share a process group and a uid with opencode itself, so a hung command that
+# gets group-killed on tool timeout, or a stray `pkill`, takes the agent process
+# down mid-task (observed: a run died by SIGTERM at 25 of its 60 minutes after
+# the agent backgrounded a mock server twice). Nothing here can prevent that —
+# the kill is legal at the kernel level and the tool boundary is opencode's, not
+# ours — so treat it as survivable instead: opencode persists the session, and
+# `run --session <id>` picks it up with the context and the on-disk work intact.
+# The resume prompt tells the agent what killed it and to change direction
+# (prompts/implement-resume.tmpl).
+#
+# Only a signal death is resumed. 124/137 mean OUR `timeout` ended the run, so
+# the budget is spent and there is nothing left to resume into; an error event
+# is a model/API failure that re-running would only pay for twice.
+#
+# What does NOT change: a run that never recovers still fails the step, so
+# deliver never runs and nothing is committed. A resume buys the agent a chance
+# to FINISH — it is not a way to salvage half-done work.
+oc_stream() {
+  local attempt=0 rc=0 raw sid="" prompt="$AGENT_PROMPT" budget signal
+  local started="$SECONDS"
+
+  while :; do
+    raw="$RAW"; [ "$attempt" -gt 0 ] && raw="$RAW.resume$attempt"
+    # Each attempt gets what is LEFT of the one wall-clock bound, so resuming
+    # extends the agent's chances, never its runtime.
+    budget=$(( RUN_TIMEOUT - (SECONDS - started) ))
+    if [ "$budget" -le 0 ]; then
+      echo "::error::implementation budget (${RUN_TIMEOUT}s) exhausted before the run could finish"; return 1
+    fi
+
+    rc=0; oc_launch "$budget" "$raw" "$prompt" "$sid" "$@" || rc=$?
+
+    if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
+      echo "::error::opencode exceeded the ${RUN_TIMEOUT}s implementation timeout (silent upstream retries?)"; return 1
+    fi
+
+    # rc >= 128: killed by signal rc-128 (143 = SIGTERM, the observed case).
+    if [ "$rc" -lt 128 ] || [ "$attempt" -ge "$RESUME_TRIES" ]; then break; fi
+
+    signal=$(( rc - 128 ))
+    [ -n "$sid" ] || sid="$(session_of "$raw")"
+    if [ -z "$sid" ]; then
+      echo "::error::opencode was killed by signal $signal before emitting a session id — cannot resume"; return 1
+    fi
+    attempt=$(( attempt + 1 ))
+    echo "::warning::opencode was killed by signal $signal — resuming session $sid (attempt $((attempt + 1)) of $((RESUME_TRIES + 1)))"
+    prompt="$(render_template "$PROMPTS_DIR/implement-resume.tmpl" "SIGNAL=$signal")"
+  done
+
+  if [ "$rc" -ge 128 ]; then
+    echo "::error::opencode was killed by signal $((rc - 128)) and did not recover — nothing is committed"; return 1
   fi
-  if grep -q '"type":"error"' "$RAW" 2>/dev/null; then
+  # The LAST attempt's stream is the one that decides: opencode EXITS 0 EVEN
+  # WHEN THE MODEL ERRORS — a non-retryable failure (e.g. a bad model id -> 400
+  # model_not_found) appears only as a top-level {"type":"error"} event.
+  # Trusting the exit code alone would let a broken model silently "succeed"
+  # with no work done.
+  if grep -q '"type":"error"' "$raw" 2>/dev/null; then
     echo "::error::opencode ended with an error event"
-    grep -o '"type":"error".*' "$RAW" | head -5 >&2
+    grep -o '"type":"error".*' "$raw" | head -5 >&2
     return 1
   fi
   return "$rc"

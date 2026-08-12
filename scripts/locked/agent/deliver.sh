@@ -30,15 +30,16 @@ fi
 git -c credential.helper= -c credential.helper='!gh auth git-credential' \
   push "https://github.com/${GITHUB_REPOSITORY}.git" "$BRANCH"
 
-# PROPOSAL_TEXT is already sanitized ("#N" → "# N"), so the quoted proposal
-# cannot smuggle a closing keyword — only the "Closes #N" line below may close
-# issues or claim the proposal.
+# PROPOSAL_TEXT is already sanitized: one line of plain ASCII with no "#" in it
+# (see sanitize_text in lib.sh), so the quoted proposal cannot smuggle a closing
+# keyword — only the "Closes #N" line below may close issues or claim the
+# proposal. Being ASCII, cut -c on the title is a character cut, not a byte cut.
 PR_URL=""
 if PR_URL=$(gh pr create \
   --repo "$GITHUB_REPOSITORY" \
   --base main \
   --head "$BRANCH" \
-  --title "feat: $(printf '%s' "$PROPOSAL_TEXT" | head -c 200 | tr '\n' ' ')" \
+  --title "feat: $(printf '%s' "$PROPOSAL_TEXT" | cut -c1-200)" \
   --body "Closes #${PROPOSAL_ID}.
 
 Proposal: ${PROPOSAL_TEXT}

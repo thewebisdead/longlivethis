@@ -144,7 +144,16 @@ http
       }
 
       if (/^\/repos\/[^/]+\/[^/]+\/issues$/.test(path)) {
-        if (req.method === 'GET') return send(200, issues)
+        // Paginate like the real API. The app reads the board across several
+        // pages and stops at the first SHORT one, so a stub that returned the
+        // whole list for every page would hand it the same issues five times
+        // over. Only visible above 100 seeded issues, which is exactly the
+        // case worth being able to test.
+        if (req.method === 'GET') {
+          const perPage = Math.min(Number(url.searchParams.get('per_page')) || 30, 100)
+          const page = Math.max(Number(url.searchParams.get('page')) || 1, 1)
+          return send(200, issues.slice((page - 1) * perPage, page * perPage))
+        }
         if (req.method === 'POST') {
           let b = {}
           try {

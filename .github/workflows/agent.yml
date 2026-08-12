@@ -86,9 +86,15 @@ jobs:
       - name: Start x402 payment proxy (only holder of the wallet key)
         env:
           WALLET_PRIVATE_KEY: ${{ secrets.WALLET_PRIVATE_KEY }}
+          # Which gateway adapter under scripts/locked/x402/providers/ pays for
+          # inference (x402inference, x402gate). A repo VARIABLE: swapping
+          # providers is a settings change, not a code change. Unset = the
+          # default provider, or whichever one INFERENCE_BASE_URL's host names.
+          INFERENCE_PROVIDER: ${{ vars.INFERENCE_PROVIDER }}
           # A repo VARIABLE, not a secret — the gateway URL is not sensitive,
           # and unlike a key it's a value someone may legitimately need to read
           # or fix from the repo settings UI without touching frozen code.
+          # Unset = the selected provider's own default endpoint.
           INFERENCE_BASE_URL: ${{ vars.INFERENCE_BASE_URL }}
           # INFERENCE_MODEL is a comma-separated priority list: the proxy runs
           # the first and retries down the rest on provider errors. It needs the
@@ -112,10 +118,14 @@ jobs:
             exit 1
           fi
           echo "PROXY_BASE=$(jq -r .baseUrl "$PORT_FILE")" >> "$GITHUB_ENV"
-          # Read by "Dump proxy log on failure" below — the proxy's own
-          # [x402gate] diagnostics (payment errors, model fallbacks) only ever
-          # land in this file; a step here failing shows nothing about WHY a
-          # proxied request failed unless something explicitly cats it.
+          # Read by "Stop payment proxy" below: the proxy settles up on SIGTERM
+          # (a batch-settlement provider refunds the unspent channel deposit),
+          # which only happens if something signals it.
+          echo "PROXY_PID=$(jq -r .pid "$PORT_FILE")" >> "$GITHUB_ENV"
+          # Read by "Dump proxy log on failure" below — the proxy's own [proxy]
+          # diagnostics (payment errors, model fallbacks) only ever land in this
+          # file; a step here failing shows nothing about WHY a proxied request
+          # failed unless something explicitly cats it.
           echo "PROXY_LOG=$RUNNER_TEMP/x402-proxy.log" >> "$GITHUB_ENV"
           # Directory that carries state between the frozen agent steps below
           # (each runs as a separate process).
@@ -181,6 +191,23 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: bash scripts/locked/agent/deliver.sh
+
+      # Stop the proxy so it can settle up. Under a channel-based provider the
+      # unspent deposit is only reclaimed by the proxy's own shutdown path, and
+      # the runner would otherwise just kill the job's leftover processes. Runs
+      # whatever happened above (including a failed implementation), and never
+      # fails the job itself: money left in the channel is recoverable, a red
+      # run for a missed refund is not worth it.
+      - name: Stop payment proxy (settle up)
+        if: always() && env.PROXY_PID != ''
+        run: |
+          kill -TERM "$PROXY_PID" 2>/dev/null || exit 0
+          for i in $(seq 1 60); do
+            kill -0 "$PROXY_PID" 2>/dev/null || break
+            sleep 1
+          done
+          kill -0 "$PROXY_PID" 2>/dev/null && kill -KILL "$PROXY_PID" 2>/dev/null || true
+          exit 0
 
       # Diagnostic only, no credentials: the proxy's own log, otherwise
       # invisible — nothing else in this job ever prints it.

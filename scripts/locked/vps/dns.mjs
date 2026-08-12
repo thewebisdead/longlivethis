@@ -9,8 +9,7 @@
  * CF_API_TOKEN / CF_ZONE_ID is a hard error, not a "repoint it by hand" warning —
  * migration cuts traffic over unattended, so a DNS write it cannot perform must
  * stop the run rather than silently leave the record on a box about to be
- * destroyed. (Free sslip.io hostnames resolve from the IP itself and involve no
- * DNS records at all; callers skip this module entirely for those.)
+ * destroyed.
  *
  * The credential is a zone-scoped API token (DNS:Edit on one zone), deliberately
  * not an account-global key, so what leaks from Actions can only touch this zone.
@@ -97,8 +96,9 @@ export async function getA(name) {
  * existing record's `proxied` flag is PRESERVED (flipping the orange cloud would
  * change the TLS topology mid-cutover and can break it).
  *
- * A brand-new record is created DNS-only, matching create-longlive's `upsertA`
- * (src/lib/dns.ts) so the record is born the same way whichever side makes it:
+ * A brand-new record is created DNS-only. Initial deploy (bootstrap.mjs) and
+ * later cutovers (migrate-vps.mjs) both go through this one function, so the
+ * record is born the same way whichever side makes it:
  * Caddy needs a clean HTTP-01 challenge and end-to-end TLS, and a fresh zone's
  * default "Flexible" SSL mode behind the proxy would talk plain HTTP to an origin
  * that only redirects to :443. Turning the proxy on later is preserved by the

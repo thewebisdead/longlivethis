@@ -14,25 +14,36 @@ REPO_ROOT="$(cd "$AGENT_DIR/../../.." && pwd)"
 PROMPTS_DIR="$AGENT_DIR/prompts"
 cd "$REPO_ROOT"
 
-# require_model — prints the primary inference model id, or aborts.
+# require_models / require_model — the configured inference models, or abort.
 #
-# The model id lives ONLY in the INFERENCE_MODEL repo variable (set at init,
+# The model ids live ONLY in the INFERENCE_MODEL repo variable (set at init,
 # passed in by agent.yml). Nothing here or in lib/constants.mjs hardcodes a
 # fallback: when a model is retired the fix is to edit that one variable, and a
 # baked-in default would just let runs limp along on a stale id.
 #
 # INFERENCE_MODEL may be a comma-separated priority list (the proxy retries down
-# it); callers that need a single id take the first entry.
-require_model() {
-  local primary
-  primary="$(printf '%s' "${INFERENCE_MODEL:-}" | cut -d, -f1 | tr -d '[:space:]')"
-  if [ -z "$primary" ]; then
+# it). require_models prints every entry, one per line, in priority order — this
+# is the full set the proxy is willing to spend on, so it is also the set the
+# agent may pick from. require_model prints just the first (the primary).
+require_models() {
+  local list
+  list="$(printf '%s' "${INFERENCE_MODEL:-}" | tr ',' '\n' \
+    | awk '{ gsub(/[[:space:]]/, ""); if (length) print }')"
+  if [ -z "$list" ]; then
     echo "::error::INFERENCE_MODEL is unset. Set the INFERENCE_MODEL repo variable" >&2
     echo "  (Settings → Secrets and variables → Actions → Variables), e.g." >&2
     echo "  gh variable set INFERENCE_MODEL --body 'anthropic/claude-sonnet-5'" >&2
     exit 1
   fi
-  printf '%s' "$primary"
+  printf '%s\n' "$list"
+}
+
+require_model() {
+  local list
+  # require_models runs in a subshell, so its `exit 1` only ends that subshell —
+  # the caller must propagate the status itself.
+  list="$(require_models)" || exit 1
+  printf '%s' "${list%%$'\n'*}"
 }
 
 # Shared jq defs (claim_re, net_votes). Prepend onto any jq -c/-n program that
@@ -53,22 +64,35 @@ state_get() { [ -f "$STATE_DIR/$1" ] && cat "$STATE_DIR/$1" || true; }
 
 # sanitize_text "TEXT"   — prints the single cleaned copy of an untrusted
 # proposal used everywhere downstream (constitution gate, implementation prompt,
-# branch slug, PR body). It:
-#   - strips ASCII control characters (keeps tab + newline),
-#   - neutralizes issue references ("#12" → "# 12") so quoted proposal text can
-#     never smuggle a closing keyword — only deliver.sh's own "Closes #N" line
-#     may close issues or claim a proposal,
-#   - trims surrounding whitespace and caps the length so an oversized proposal
-#     cannot blow up the inference context or the PR body.
+# branch slug, PR title/body).
+#
+# ONE RULE, an allowlist: keep ASCII letters, digits, space, and the punctuation
+#     . , : ; ! ? ' " ( ) - _ / @ & % + = *
+# turn EVERYTHING else into a space, squeeze runs of spaces, cut to 4000
+# characters, trim the ends. The result is one line of plain ASCII.
+#
+# What that buys, without a single special case:
+#   - always valid UTF-8 (it is ASCII), so jq --arg, the prompts and the PR body
+#     can never receive a broken byte sequence, and the 4000-char cut can never
+#     land inside a multi-byte character;
+#   - no control bytes, no NUL, no ESC;
+#   - no "#", so quoted proposal text cannot smuggle an issue reference — only
+#     deliver.sh's own "Closes #N" line may close or claim a proposal;
+#   - no newline, so the text cannot forge structure inside a prompt;
+#   - no shell/markdown/HTML/template metacharacters (` $ \ | < > { } ^ ~ #),
+#     so it stays inert in the prompt templates, the branch slug and the PR body.
+# Anything a legitimate proposal needs — prose, numbers, URLs — survives.
+#
 # Idempotent: sanitize_text "$(sanitize_text X)" == sanitize_text X. Called
 # before the constitution gate (select-proposal.sh) AND in sanitize.sh, so the
 # gate screens exactly the text the implementer receives.
 sanitize_text() {
+  local -x LC_ALL=C   # byte-wise tr/cut, so "character" means "ASCII byte"
   printf '%s' "$1" \
-    | tr -d '\000-\010\013-\037' \
-    | sed -E 's/#([0-9])/# \1/g' \
-    | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' \
-    | head -c 4000
+    | tr -c "A-Za-z0-9 .,:;!?'\"()_/@&%+=*-" ' ' \
+    | tr -s ' ' \
+    | cut -c1-4000 \
+    | sed -E 's/^ //; s/ $//'
 }
 
 # render_template FILE KEY=VALUE...   — prints FILE with each {{KEY}} replaced

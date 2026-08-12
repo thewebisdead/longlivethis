@@ -48,7 +48,43 @@ else
   echo "::warning::Could not list open PRs — treating every proposal as unclaimed. A proposal already in flight may be built twice."
 fi
 
-if ! ISSUES_JSON=$(gh api "repos/${GITHUB_REPOSITORY}/issues?creator=${PROPOSAL_CREATOR}&state=open&per_page=100"); then
+# Read the WHOLE board, not the first page: 100 is GitHub's max page size, not
+# the board's size, and one page is the NEWEST 100 — without pagination the
+# agent would rank a window chosen by creation date and could never see a
+# popular older proposal at all. Ranking below runs on the merged list, so a
+# high-voted proposal on page 3 still wins.
+#
+# The loop is bounded (not `gh api --paginate`, which follows next links with
+# no ceiling): PAGE_SIZE * MAX_PAGES matches the 500-proposal intake cap the
+# app enforces (PROPOSAL_HARD_CAP in app/src/lib/github.ts), so a repo that
+# somehow accumulated thousands of issues costs a known number of requests
+# instead of an open-ended crawl. It stops at the first short page, which on a
+# board kept near CLEANUP_THRESHOLD by the cleanup workflow is the first one.
+#
+# A gh failure skips the run rather than ranking a truncated board: a partial
+# read looks exactly like "those proposals were closed" to every filter below.
+PAGE_SIZE=100
+MAX_PAGES=5
+ISSUES_JSON='[]'
+FETCH_OK=true
+for page in $(seq 1 "$MAX_PAGES"); do
+  if ! PAGE_JSON=$(gh api \
+        "repos/${GITHUB_REPOSITORY}/issues?creator=${PROPOSAL_CREATOR}&state=open&per_page=${PAGE_SIZE}&page=${page}"); then
+    FETCH_OK=false
+    break
+  fi
+  ISSUES_JSON=$(jq -c --argjson acc "$ISSUES_JSON" '$acc + .' <<<"$PAGE_JSON")
+  PAGE_COUNT=$(jq 'length' <<<"$PAGE_JSON")
+  if [ "$PAGE_COUNT" -lt "$PAGE_SIZE" ]; then
+    break
+  fi
+  if [ "$page" -eq "$MAX_PAGES" ]; then
+    # Only reachable past the cap intake enforces — a bug or hand-filed issues.
+    # Rank what we have, but say the tail is invisible instead of hiding it.
+    echo "::warning::Hit the $((PAGE_SIZE * MAX_PAGES))-proposal read cap — older proposals are not being ranked."
+  fi
+done
+if [ "$FETCH_OK" != true ]; then
   echo "::warning::Could not fetch proposal issues — skipping this run."
   step_output selected false
   exit 0

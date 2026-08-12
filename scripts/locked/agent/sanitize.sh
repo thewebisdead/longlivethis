@@ -18,4 +18,4 @@ RAW="$(state_get proposal_text)"
 CLEAN="$(sanitize_text "$RAW")"
 
 printf '%s' "$CLEAN" | state_put proposal_sanitized
-echo "Sanitized proposal ($(printf '%s' "$CLEAN" | wc -c | tr -d ' ') bytes)."
+echo "Sanitized proposal ($(printf '%s' "$CLEAN" | wc -c | tr -d ' ') characters)."

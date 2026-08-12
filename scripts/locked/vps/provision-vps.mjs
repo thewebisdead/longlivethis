@@ -7,7 +7,6 @@
  * Exports:
  *   provisionAndBootstrap()    provision a VPS + bootstrap + health-check + cert
  *   planForBalance()           pick the best plan affordable at a given runway
- *   isZoneDomain()             is this a domain we drive DNS for (vs sslip.io)?
  *
  * No CLI: the bootstrap workflow's entry point is ./bootstrap.mjs.
  */
@@ -22,17 +21,6 @@ import { log } from '../lib/log.mjs'
 import { APP_PORT, HEALTH_PATHS, PREPAID_HOURS, RAM_FLOOR_MB, TARGET_DAYS } from '../lib/constants.mjs'
 
 const LE_DIR = 'acme-v02.api.letsencrypt.org-directory'
-
-/**
- * True when `name` is a real domain whose DNS we drive through Cloudflare, as
- * opposed to a free sslip.io hostname (which resolves straight from the IP it
- * embeds and has no record to write). Everything DNS-related — the DNS-01 cert
- * pre-seed and the A-record write — hangs off this, because Cloudflare is
- * mandatory for the domain case and irrelevant for the free one.
- */
-export function isZoneDomain(name) {
-  return Boolean(name) && !name.endsWith('.sslip.io')
-}
 
 // ---- plan selection ----
 
@@ -148,8 +136,8 @@ async function preSeedCert({ dir, host, keyPath, domain, acmeEmail }) {
  *
  * Returns { host, privateKey, hostKey, instanceId, keyPath }. The temp dir
  * holding the SSH key is deliberately NOT removed: the caller may still need
- * `keyPath` for post-provision work (e.g. fixing app.env's PUBLIC_URL for free
- * hostnames). It lives in the OS temp dir, which the runner wipes after the job.
+ * `keyPath` for post-provision work on the box (migrate-vps.mjs does). It lives
+ * in the OS temp dir, which the runner wipes after the job.
  */
 export async function provisionAndBootstrap({
   account,
@@ -182,9 +170,9 @@ export async function provisionAndBootstrap({
   assertHealthyInternally(host, keyPath)
   const hostKey = scanHostKey(host)
 
-  // Only for a domain we hold the Cloudflare zone for. A free sslip.io hostname
-  // has no zone here, so DNS-01 cannot be solved.
-  if (isZoneDomain(domain)) await preSeedCert({ dir, host, keyPath, domain, acmeEmail })
+  // Every deployment is a Cloudflare-fronted domain, so the zone for DNS-01 is
+  // always ours to drive. Best-effort — see preSeedCert.
+  await preSeedCert({ dir, host, keyPath, domain, acmeEmail })
 
   return { host, privateKey, hostKey, instanceId, keyPath }
 }

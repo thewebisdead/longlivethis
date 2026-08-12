@@ -15,9 +15,21 @@ REPO_URL="${1:-${REPO_URL:-}}"
 
 export DEBIAN_FRONTEND=noninteractive
 
+# cloud-init runs unattended-upgrades right after first boot, which can hold
+# the dpkg lock for the first minute or two — wait it out instead of racing
+# it. apt-get itself already retries acquiring the lock for a few seconds,
+# that isn't enough here, so retry the whole invocation.
+apt_retry() {
+  local i=1
+  until "$@"; do
+    [ $i -ge 12 ] && { echo "bootstrap: apt failed after $i attempts"; return 1; }
+    echo "bootstrap: apt locked (attempt $i); retrying in 5s…"; i=$((i+1)); sleep 5
+  done
+}
+
 echo "bootstrap: base packages…"
-apt-get update -qq
-apt-get install -y -qq curl git gnupg2 ca-certificates apt-transport-https
+apt_retry apt-get update -qq
+apt_retry apt-get install -y -qq curl git gnupg2 ca-certificates apt-transport-https
 
 echo "bootstrap: docker…"
 command -v docker >/dev/null 2>&1 || curl -fsSL https://get.docker.com | sh
@@ -30,7 +42,7 @@ echo "bootstrap: caddy…"
 if ! command -v caddy >/dev/null 2>&1; then
   curl -1sLf https://dl.cloudsmith.io/public/caddy/stable/gpg.key | gpg --batch --yes --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
   echo "deb [signed-by=/usr/share/keyrings/caddy-stable-archive-keyring.gpg] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main" > /etc/apt/sources.list.d/caddy-stable.list
-  apt-get update -qq && apt-get install -y -qq caddy
+  apt_retry apt-get update -qq && apt_retry apt-get install -y -qq caddy
 fi
 
 # Cloudflare Authenticated Origin Pull CA cert. Verified by Caddy's
