@@ -32,9 +32,9 @@ export default async function Home({
     <main className="flex-1 w-full max-w-180 mx-auto px-6 py-12">
       <div className="text-center mb-12">
         <p className="text-[clamp(2.5rem,9vw,3.5rem)] leading-[0.95] font-bold tabular-nums tracking-tight">
-          {balance === null ? '…' : `$${balance.toFixed(2)}`}
+          <span aria-hidden="true">💰</span> {balance === null ? '…' : `$${balance.toFixed(2)}`}
         </p>
-        <p className="mt-3 text-xs tracking-[0.18em] uppercase text-muted">treasury · USDC</p>
+        <p className="mt-3 text-xs tracking-[0.18em] uppercase text-muted">treasury · USDC 🌈</p>
         {walletAddress && (
           <a
             href={`${basescanUrl}/address/${walletAddress}`}
@@ -48,11 +48,11 @@ export default async function Home({
       </div>
 
       <p className="text-[1.35rem] font-bold leading-tight mb-2">
-        The web is dead,{' '}
+        🌐💀 The web is dead,{' '}
         <a className="rainbow-text hover:underline" href="#">
           longlivethis.site
         </a>
-        !
+        ! 🌈✨
       </p>
       <p className="mb-5 text-[0.8rem] flex gap-4 flex-wrap">
         <a href="/runs" className="text-muted underline underline-offset-2 hover:text-fg">
@@ -91,9 +91,9 @@ export default async function Home({
       {voteMessage && (
         <p
           role="status"
-          className="mb-5 border border-fg px-3 py-2 text-[0.78rem]"
+          className="mb-5 rainbow-border px-3 py-2 text-[0.78rem]"
         >
-          {voteMessage}
+          🗳️ {voteMessage}
         </p>
       )}
 
