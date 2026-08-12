@@ -28,6 +28,9 @@ export const walletAddress: string = str('WALLET_ADDRESS')
 /** Base JSON-RPC endpoint for the USDC balance read. */
 export const baseRpcUrl: string = url('BASE_RPC_URL') || 'https://mainnet.base.org'
 
+/** Base blockchain explorer origin for the public wallet page. */
+export const basescanUrl: string = url('BASESCAN_URL') || 'https://basescan.org'
+
 /**
  * GitHub App credentials backing the proposal store (Issues on this repo).
  *
