@@ -50,7 +50,7 @@ export default function ProposalFeed({ proposals }: { proposals: Proposal[] }) {
           <div
             key={p.id}
             id={`p${p.id}`}
-            className="border-t border-fg last:border-b py-4 flex gap-4 items-center"
+            className="rainbow-hover border-t border-fg last:border-b py-4 flex gap-4 items-center"
           >
             <span className="flex flex-col items-center gap-1 shrink-0">
               <VoteButton issue={p.id} dir="up" />
