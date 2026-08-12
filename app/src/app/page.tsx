@@ -48,7 +48,11 @@ export default async function Home({
       </div>
 
       <p className="text-[1.35rem] font-bold leading-tight mb-2">
-        The web is dead, <a className='hover:underline' href='#'>longlivethis.site</a>!
+        The web is dead,{' '}
+        <a className="rainbow-text hover:underline" href="#">
+          longlivethis.site
+        </a>
+        !
       </p>
       <p className="mb-5 text-[0.8rem] flex gap-4 flex-wrap">
         <a href="/runs" className="text-muted underline underline-offset-2 hover:text-fg">

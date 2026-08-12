@@ -6,3 +6,89 @@
   --color-muted: #888888;
   --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace;
 }
+
+/* Rainbow theme: a thin animated gradient bar up top, gradient text for the
+   headline, and a rainbow hover sweep on proposal rows. All driven by one
+   keyframe so the palette only has to be tuned in one place, and every
+   animated bit backs off to something static for users who asked for less
+   motion. */
+@keyframes rainbow-shift {
+  0% {
+    background-position: 0% 50%;
+  }
+  100% {
+    background-position: 200% 50%;
+  }
+}
+
+.rainbow-bar {
+  height: 4px;
+  background: linear-gradient(
+    90deg,
+    #ff0040,
+    #ff8c00,
+    #ffee00,
+    #00e065,
+    #00c2ff,
+    #7a5cff,
+    #ff2fd0,
+    #ff0040
+  );
+  background-size: 200% 100%;
+  animation: rainbow-shift 6s linear infinite;
+}
+
+.rainbow-text {
+  background: linear-gradient(
+    90deg,
+    #ff0040,
+    #ff8c00,
+    #ffee00,
+    #00e065,
+    #00c2ff,
+    #7a5cff,
+    #ff2fd0,
+    #ff0040
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: rainbow-shift 6s linear infinite;
+}
+
+.rainbow-hover {
+  position: relative;
+}
+
+.rainbow-hover::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 -1rem;
+  width: 4px;
+  background: linear-gradient(
+    180deg,
+    #ff0040,
+    #ff8c00,
+    #ffee00,
+    #00e065,
+    #00c2ff,
+    #7a5cff,
+    #ff2fd0
+  );
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.rainbow-hover:hover::before,
+.rainbow-hover:focus-within::before {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rainbow-bar,
+  .rainbow-text {
+    animation: none;
+    background-size: 100% 100%;
+  }
+}
