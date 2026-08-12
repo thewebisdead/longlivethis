@@ -177,10 +177,23 @@ function isRetryableHttp(status) {
   return status === 402 || status === 429 || status >= 500
 }
 
-/** Backoff before the single same-model retry. A busy payment channel needs
- *  longer than a rate limit to clear. */
-function retryDelayMs(status) {
-  return status === 402 ? 2000 : 400
+/** How many times one model is tried before falling down the model list. */
+const MAX_ATTEMPTS = 3
+
+/**
+ * Backoff before the next same-model attempt, growing with each one.
+ *
+ * A busy payment channel needs far longer than a rate limit to clear, and so
+ * does a gateway timeout: an upstream 5xx/524 usually means the edge gave up
+ * while the gateway was STILL generating, and a batch-settlement channel stays
+ * locked server-side for as long as that request runs — so the next payment
+ * comes back as a bare 402 (`invalid_batch_settlement_evm_channel_busy`) if it
+ * follows too closely. That exact sequence (524 → 400ms → 402 → dead run) is
+ * what this schedule exists to survive; only a plain 429 gets the short wait.
+ */
+function retryDelayMs(status, attempt) {
+  const base = status === 429 ? 400 : 3000
+  return base * attempt
 }
 
 function salvageFinishError(unwrapped) {
@@ -235,19 +248,23 @@ async function callUpstream(ctx, bodyBuf) {
 }
 
 /**
- * Try one model. A provider error (finish_reason=error, 429, 5xx) is retried
- * once against the SAME model after the session refreshes whatever it needs
- * (a prepaid top-up, a channel deposit) — these are usually transient. Returns
- * the last attempt.
+ * Try one model. A provider error (finish_reason=error, 402, 429, 5xx) is
+ * retried against the SAME model, up to MAX_ATTEMPTS times with a growing wait,
+ * after the session refreshes whatever it needs (a prepaid top-up, a channel
+ * deposit) — these are transient, but a channel freed by a timed-out upstream
+ * request can take a good few seconds to come back, which one immediate retry
+ * cannot outlast. Returns the last attempt.
  */
 async function tryUpstream(ctx, bodyBuf, model) {
   let result = await callUpstream(ctx, bodyBuf)
-  const { upstream, text, unwrapped } = result
-  if ((upstream.ok && isFinishError(unwrapped)) || isRetryableHttp(upstream.status)) {
+  for (let attempt = 1; attempt < MAX_ATTEMPTS; attempt++) {
+    const { upstream, text, unwrapped } = result
+    if (!(upstream.ok && isFinishError(unwrapped)) && !isRetryableHttp(upstream.status)) break
+    const delay = retryDelayMs(upstream.status, attempt)
     console.error(
-      `[proxy] model=${model} status=${upstream.status} ${summarizeCompletion(unwrapped, text)} — retrying once`
+      `[proxy] model=${model} status=${upstream.status} ${summarizeCompletion(unwrapped, text)} — retrying in ${delay}ms (attempt ${attempt + 1}/${MAX_ATTEMPTS})`
     )
-    await new Promise((r) => setTimeout(r, retryDelayMs(upstream.status)))
+    await new Promise((r) => setTimeout(r, delay))
     await ctx.session.refresh()
     result = await callUpstream(ctx, bodyBuf)
   }

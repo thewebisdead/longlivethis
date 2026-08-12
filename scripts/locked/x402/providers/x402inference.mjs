@@ -57,6 +57,15 @@ function depositStrategy(context) {
   return amount.toString()
 }
 
+/**
+ * Refund retries at shutdown, and the base wait between them (it grows with
+ * each attempt). Bounded well under the 60s the workflow's "Stop payment proxy"
+ * step allows a SIGTERM to take: an unclaimed refund is recoverable later, a
+ * job that never exits is not.
+ */
+const REFUND_ATTEMPTS = 3
+const REFUND_RETRY_MS = 5000
+
 /** Map a local proxy path (`/v1/chat/completions`) onto the gateway's path. */
 function targetUrl(baseUrl, path) {
   const rest = String(path).replace(/^\/+/, '').replace(/^v1\//, '')
@@ -121,14 +130,30 @@ export const x402inference = {
        * so it must never fail the job.
        */
       async close() {
-        try {
-          // Through the same queue: a refund issued while a payment is still in
-          // flight is exactly the "channel busy" collision above, and it would
-          // strand the deposit instead of reclaiming it.
-          const settle = await serialize(() => scheme.refund(targetUrl(baseUrl, 'chat/completions')))
-          console.error(`[x402inference] refunded unused channel balance: ${JSON.stringify(settle).slice(0, 300)}`)
-        } catch (e) {
-          console.error(`[x402inference] refund failed (balance stays in the channel): ${e?.message || e}`)
+        // The local queue cannot see a request the GATEWAY is still working on:
+        // when an upstream call times out at the edge (524) the channel stays
+        // locked server-side until that generation finishes, so a refund fired
+        // right after a failed run is answered "channel busy" and the deposit is
+        // stranded. Wait it out a few times before giving up.
+        for (let attempt = 1; attempt <= REFUND_ATTEMPTS; attempt++) {
+          try {
+            // Through the same queue: a refund issued while a payment is still in
+            // flight is exactly the "channel busy" collision above, and it would
+            // strand the deposit instead of reclaiming it.
+            const settle = await serialize(() => scheme.refund(targetUrl(baseUrl, 'chat/completions')))
+            console.error(`[x402inference] refunded unused channel balance: ${JSON.stringify(settle).slice(0, 300)}`)
+            return
+          } catch (e) {
+            const last = attempt === REFUND_ATTEMPTS
+            const msg = e?.message || e
+            if (last) {
+              console.error(`[x402inference] refund failed (balance stays in the channel): ${msg}`)
+              return
+            }
+            const delay = REFUND_RETRY_MS * attempt
+            console.error(`[x402inference] refund attempt ${attempt}/${REFUND_ATTEMPTS} failed (${msg}) — retrying in ${delay}ms`)
+            await new Promise((r) => setTimeout(r, delay))
+          }
         }
       },
     }
