@@ -1,3 +1,4 @@
+import Manifesto from '@/components/Manifesto'
 import ProposeForm from '@/components/ProposeForm'
 import ProposalFeed from '@/components/ProposalFeed'
 import { basescanUrl, repoUrl, walletAddress } from '@/lib/config'
@@ -96,6 +97,8 @@ export default async function Home({
           🗳️ {voteMessage}
         </p>
       )}
+
+      <Manifesto />
 
       <ProposeForm />
       <ProposalFeed proposals={proposals} />
