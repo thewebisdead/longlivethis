@@ -1,55 +1,88 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { parseRunFile } from './runs.ts'
+import { parseLog, summarize } from './runs.ts'
 
-test('parseRunFile reads metadata + event lines into a Run', () => {
-  const raw = [
-    JSON.stringify({
-      _run: { id: 'abc123', proposal: 'Add a /runs page', model: 'x', outcome: 'committed', cost: '$0.50', startedAt: '2026-08-12T03:00:00Z' },
-    }),
-    JSON.stringify({ type: 'step_start', step: '1', timestamp: '2026-08-12T03:00:01Z', proposal: 'Add a /runs page' }),
+test('parseLog extracts the JSONL event stream out of a raw workflow log', () => {
+  const log = [
+    '2026-08-12T03:00:00.0000000Z === 2026-08-12T03:00:00Z select-proposal start ===',
+    '2026-08-12T03:00:01.0000000Z Proposals: 3 open, 1 eligible after the vote + claim screen.',
+    JSON.stringify({ type: 'step_start', step: 'implement', model: 'moonshotai/kimi-k3', proposal: 'Add a /runs page' }),
+    'some random shell output {not json}',
     JSON.stringify({ type: 'text', text: 'Investigating the event schema.' }),
     JSON.stringify({ type: 'tool_use', tool: 'read', input: { path: 'app/src/lib/runs.ts' }, resultSummary: '{ "file": "…" }' }),
     JSON.stringify({ type: 'step_finish', outcome: 'committed', cost: '$0.50' }),
+    '',
   ].join('\n')
 
-  const run = parseRunFile('runs/abc123.jsonl', raw)
-  assert.equal(run.id, 'abc123')
-  assert.equal(run.proposal, 'Add a /runs page')
-  assert.equal(run.model, 'x')
-  assert.equal(run.outcome, 'committed')
-  assert.equal(run.cost, '$0.50')
-  assert.equal(run.startedAt, '2026-08-12T03:00:00Z')
-  assert.equal(run.events.length, 4)
-  assert.equal(run.events[0].type, 'step_start')
-  assert.equal(run.events[2].type, 'tool_use')
-  assert.equal((run.events[2] as { tool?: string }).tool, 'read')
+  const events = parseLog(log)
+  assert.equal(events.length, 4)
+  assert.equal(events[0].type, 'step_start')
+  assert.equal(events[0].model, 'moonshotai/kimi-k3')
+  assert.equal(events[1].type, 'text')
+  assert.equal(events[2].type, 'tool_use')
+  assert.equal(events[2].tool, 'read')
+  assert.equal(events[3].type, 'step_finish')
 })
 
-test('parseRunFile tolerates garbage lines without dropping the rest', () => {
-  const raw = ['not json', '{', JSON.stringify({ type: 'text', text: 'hello' })].join('\n')
-  const run = parseRunFile('runs/broken.jsonl', raw)
-  assert.equal(run.events.length, 1)
-  assert.equal(run.events[0].type, 'text')
+test('parseLog lifts a nested part payload onto the event', () => {
+  const events = parseLog(
+    JSON.stringify({ type: 'text', timestamp: 1, part: { type: 'text', text: 'hello from part' } })
+  )
+  assert.equal(events.length, 1)
+  assert.equal(events[0].text, 'hello from part')
 })
 
-test('parseRunFile derives fields from events when no metadata line exists', () => {
-  const raw = [
-    JSON.stringify({ type: 'step_start', step: '1', model: 'm1', timestamp: '2026-01-01T00:00:00Z', proposal: 'Derived title' }),
-    JSON.stringify({ type: 'text', text: 'work' }),
-    JSON.stringify({ type: 'step_finish', outcome: 'failed', cost: '$0.01' }),
+test('parseLog ignores non-event lines and JSON objects without a type', () => {
+  const log = [
+    'not json at all',
+    '{"level":"info","msg":"plain log object"}',
+    '[1,2,3]',
+    JSON.stringify({ type: 'error', error: 'boom' }),
   ].join('\n')
-  const run = parseRunFile('runs/x.jsonl', raw)
-  assert.equal(run.proposal, 'Derived title')
+  const events = parseLog(log)
+  assert.equal(events.length, 1)
+  assert.equal(events[0].type, 'error')
+})
+
+test('summarize builds the Run from workflow-run fields plus the stream', () => {
+  const events = parseLog(
+    [
+      JSON.stringify({ type: 'step_start', model: 'm1', proposal: 'Fix the runs page' }),
+      JSON.stringify({ type: 'step_finish', cost: '$0.42' }),
+    ].join('\n')
+  )
+  const run = summarize(
+    {
+      id: 12345,
+      name: 'agent',
+      event: 'schedule',
+      conclusion: 'success',
+      created_at: '2026-08-12T03:00:00Z',
+      head_branch: 'feat/fix-the-runs-page',
+    },
+    events
+  )
+  assert.equal(run.id, '12345')
+  assert.equal(run.proposal, 'Fix the runs page')
   assert.equal(run.model, 'm1')
-  assert.equal(run.outcome, 'failed')
-  assert.equal(run.cost, '$0.01')
-  assert.equal(run.startedAt, '2026-01-01T00:00:00Z')
+  assert.equal(run.outcome, 'success')
+  assert.equal(run.cost, '$0.42')
+  assert.equal(run.startedAt, '2026-08-12T03:00:00Z')
+  assert.equal(run.events.length, 2)
 })
 
-test('parseRunFile falls back to the path when nothing identifies the run', () => {
-  const run = parseRunFile('runs/zz.jsonl', '{"type":"text","text":"hi"}')
-  assert.equal(run.proposal, 'runs/zz.jsonl')
+test('summarize falls back to the branch when the stream names no proposal', () => {
+  const run = summarize(
+    {
+      id: 7,
+      conclusion: 'failure',
+      created_at: '2026-01-01T00:00:00Z',
+      head_branch: 'feat/dark-mode-toggle',
+    },
+    parseLog(JSON.stringify({ type: 'text', text: 'work' }))
+  )
+  assert.equal(run.proposal, 'dark mode toggle')
+  assert.equal(run.outcome, 'failure')
   assert.equal(run.model, '')
-  assert.equal(run.outcome, '')
+  assert.equal(run.cost, '')
 })
