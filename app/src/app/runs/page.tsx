@@ -1,5 +1,5 @@
 import RunTranscript from '@/components/RunTranscript'
-import { listRuns, RUNS_REF } from '@/lib/runs'
+import { listRuns, RUNS_WORKFLOW } from '@/lib/runs'
 import { repoUrl } from '@/lib/config'
 
 export const dynamic = 'force-dynamic'
@@ -13,14 +13,14 @@ export default async function RunsPage() {
     <main className="flex-1 w-full max-w-180 mx-auto px-6 py-12">
       <p className="text-[1.35rem] font-bold leading-tight mb-1 rainbow-text">🏃 Runs 🏃</p>
       <p className="text-[0.8rem] text-muted mb-8">
-        A public, transcript-style log of past agent implement runs — stored on
-        the <code className="text-fg">{RUNS_REF}</code> ref, one JSONL file per
-        run.
+        A public, transcript-style log of past agent implement runs — the actual
+        logs of the <code className="text-fg">{RUNS_WORKFLOW}</code> workflow,
+        one transcript per implemented proposal.
         {repoUrl && (
           <>
             {' '}
             <a
-              href={`${repoUrl}/tree/${RUNS_REF}`}
+              href={`${repoUrl}/actions/workflows/${RUNS_WORKFLOW}`}
               target="_blank"
               rel="noopener"
               className="underline underline-offset-2 hover:text-fg"
