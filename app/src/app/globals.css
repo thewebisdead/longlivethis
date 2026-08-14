@@ -132,29 +132,35 @@
   animation: rainbow-shift 6s linear infinite;
 }
 
-/* Animated rainbow border: black fill on padding-box, rainbow gradient
-   clipped to the border-box. Drop onto anything that had `border border-fg`.
-   Also forces an opaque backdrop so the kaleidoscope never shows through
-   text-bearing panels. */
+/* Animated rainbow border: the gradient lives on a ::before layer that peeks
+   out by 1px on every side, instead of background-clip: border-box. Firefox
+   repaints an animated border-box background at subpixel offsets, which made
+   the right edge of the manifesto box flicker; a composited pseudo-element
+   does not. The element itself keeps a solid #000 background so the
+   kaleidoscope never shows through text-bearing panels. */
 .rainbow-border {
-  border: 1px solid transparent;
-  background:
-    linear-gradient(#000, #000) padding-box,
-    linear-gradient(
-        90deg,
-        #ff0040,
-        #ff8c00,
-        #ffee00,
-        #00e065,
-        #00c2ff,
-        #7a5cff,
-        #ff2fd0,
-        #ff0040
-      )
-      border-box;
-  background-size:
-    100% 100%,
-    200% 100%;
+  position: relative;
+  background: #000;
+}
+
+.rainbow-border::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  padding: 1px;
+  background: linear-gradient(
+    90deg,
+    #ff0040,
+    #ff8c00,
+    #ffee00,
+    #00e065,
+    #00c2ff,
+    #7a5cff,
+    #ff2fd0,
+    #ff0040
+  );
+  background-size: 200% 100%;
   animation: rainbow-shift 8s linear infinite;
 }
 
@@ -191,12 +197,12 @@
   .kaleidoscope::after,
   .rainbow-bar,
   .rainbow-text,
-  .rainbow-border {
+  .rainbow-border::before {
     animation: none;
   }
   .rainbow-bar,
   .rainbow-text,
-  .rainbow-border {
+  .rainbow-border::before {
     background-size: 100% 100%;
   }
 }
