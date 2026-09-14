@@ -109,9 +109,28 @@ jq -e --arg m "$MODEL" '[.data[].id] | index($m)' >/dev/null <<<"$CATALOGUE" || 
   exit 1
 }
 
+# compat states the wire dialect instead of letting Pi infer it. Pi picks its
+# OpenAI dialect from a hardcoded list of known hosts (deepseek.com, chutes.ai,
+# moonshot, together, …); a private gateway is on no such list, so it assumes
+# stock OpenAI and sends parameters the accountless endpoint rejects outright.
+# Each one 400s on the run's FIRST request — a whole sweep lost to a parameter
+# name, with nothing implemented and the channel opened and refunded. Two have
+# cost a run already:
+#   - store: false — Pi asking not to persist the completion, which a stateless
+#     endpoint satisfies by construction but still rejects as a parameter.
+#   - max_completion_tokens — the gateway computes its price ceiling from
+#     max_tokens and rejects the newer spelling rather than silently uncapping.
+# Both are detected per HOST, not per model id, so serving deepseek/* through a
+# gateway of our own does not trigger Pi's deepseek branch.
+#
+# It sits at PROVIDER level, not per model: it describes the proxy, and every
+# model reaches the agent through that one endpoint. Kept minimal on purpose —
+# each field here overrides a real capability check, so only quirks the gateway
+# has actually rejected belong in it; the rest is the gateway's job to tolerate.
 jq --arg base "$PROXY_BASE" '{
   providers: { inference: {
     name: "inference", baseUrl: $base, api: "openai-completions", apiKey: "x402",
+    compat: { maxTokensField: "max_tokens", supportsStore: false },
     models: [ .data[] | {
       id: .id, name: .id, reasoning: false, input: ["text"],
       contextWindow: 128000, maxTokens: 16384,
