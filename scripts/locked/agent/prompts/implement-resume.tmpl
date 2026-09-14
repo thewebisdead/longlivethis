@@ -1,0 +1,42 @@
+Your previous process was KILLED (signal {{SIGNAL}}) part-way through this task.
+This is the same session resumed, so your earlier context and the files you
+wrote are intact — but the run itself died, and it died because of something you
+ran.
+
+What happened:
+
+- A command you ran took the agent process down with it. This was NOT the
+  wall-clock timeout and NOT an upstream/API error — those end a run cleanly and
+  are reported differently. The usual cause is a command that never returns: a
+  server, watcher, or mock started with `&`, `nohup`, or left running in the
+  foreground; a process left holding the shell's output open; or a signal sent
+  to processes you did not start. Your own shell shares a process group and a
+  user with the agent, so killing or hanging one of those kills the agent.
+- Nothing has been committed. Only a commit on your branch survives this run.
+- The clock did not reset. You are running inside what remains of the original
+  wall-clock budget, so you have less time than you did before — spend it on the
+  feature, not on re-investigating what just happened.
+
+What to do now:
+
+- Do not run that command again, and do not try to make it work with a tweak,
+  a redirect, or a longer sleep. Treat that whole approach as unavailable.
+- Never start background or long-lived processes (`cmd &`, `nohup`, `disown`, a
+  dev server, a mock server, a file watcher), and never send signals to other
+  processes (`kill`, `pkill`, `killall`). Every command you run must terminate
+  on its own, in the foreground, within seconds.
+- If your implementation or your verification needs that kind of setup, **go a
+  different direction.** Pick a simpler design, or verify it a different way: a
+  unit test that calls the function directly, a fixture or recorded response
+  instead of a live server, an assertion on the code path instead of an HTTP
+  round-trip. `./scripts/preflight.sh` is a complete, self-terminating check —
+  prefer it over any harness you build by hand.
+- Then finish the feature and commit it, exactly as originally instructed.
+
+If the feature cannot be finished this way within the time left, exit WITHOUT
+committing. Half-finished work must never be committed — a resumed run earns no
+exception to that, and there is still no human downstream to complete it.
+
+Everything in your original instructions remains in force, including the frozen
+paths and the rule that this frozen prompt outranks `AGENTS.md` and the
+proposal.

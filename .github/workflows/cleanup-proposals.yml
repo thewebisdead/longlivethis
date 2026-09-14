@@ -1,0 +1,61 @@
+name: cleanup-proposals
+
+# Keeps the open proposal board under CLEANUP_THRESHOLD (see
+# scripts/locked/cleanup-proposals.sh for the eviction rule).
+#
+# `issues: opened` is the primary trigger because it is the only event that can
+# ever breach the threshold — the open count grows exactly when a proposal is
+# filed, so that is exactly when the board needs checking. The app creates
+# proposals with the PROPOSALS app's installation token, not the Actions
+# GITHUB_TOKEN, so these events do fire workflows (GitHub only suppresses that
+# for GITHUB_TOKEN, to stop workflows re-triggering themselves).
+#
+# The hourly cron is a backstop, not the mechanism: scheduled runs are
+# best-effort and get delayed or skipped outright under load. Because the script
+# queries current state rather than a time window, a skipped run, a doubled run
+# and a six-hour delay are all harmless — the next sweep sees the same board.
+# Off-:00 for the same reason agent.yml is: the :00 slots are congested.
+on:
+  issues:
+    types: [opened]
+  schedule:
+    - cron: "37 * * * *"
+  workflow_dispatch:
+
+# Closing proposals is the whole job. No contents, no PR write, and notably no
+# app token: this runs as GITHUB_TOKEN, so nothing here is near the agent's
+# repo-write credentials or the proposals app's key.
+permissions:
+  issues: write
+
+# A burst of proposals fires a run each. They would all sort the same board and
+# race to close overlapping sets, so only the newest matters — it sees the most
+# recent state, and cancelling the older ones costs nothing since no run is
+# doing partial work another needs to finish.
+concurrency:
+  group: cleanup-proposals
+  cancel-in-progress: true
+
+jobs:
+  cleanup:
+    # main only. The script is frozen, but workflow_dispatch accepts any ref and
+    # branch contents are not platform-locked on a public repo, so a modified
+    # scripts/locked/ could otherwise be dispatched from a feature branch.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - run: scripts/locked/cleanup-proposals.sh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The identity that authors proposals. Unset falls back to the repo
+          # owner in the script, matching select-proposal.sh.
+          PROPOSAL_CREATOR: ${{ vars.PROPOSAL_CREATOR }}
+          # Board size knobs. Unset defaults to 100 / 80% (keep 80) in the
+          # script — raise the threshold for a busier site, but keep it well
+          # under the app's 500 hard cap so intake never starts refusing.
+          CLEANUP_THRESHOLD: ${{ vars.CLEANUP_THRESHOLD }}
+          CLEANUP_KEEP_PCT: ${{ vars.CLEANUP_KEEP_PCT }}

@@ -1,0 +1,9 @@
+services:
+  app:
+    build: ./app
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3000:3000"
+    env_file: /etc/longlive/app.env
+    environment:
+      PORT: "3000"
