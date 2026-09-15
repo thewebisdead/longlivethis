@@ -7,3 +7,5 @@ services:
     env_file: /etc/longlive/app.env
     environment:
       PORT: "3000"
+    volumes:
+      - /var/lib/longlive/state:/var/lib/longlive/state
