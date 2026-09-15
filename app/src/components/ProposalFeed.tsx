@@ -7,15 +7,13 @@ import type { Proposal } from '@/lib/types'
 // check and the agent's selection both still see every open proposal.
 const DISPLAY_MAX = 100
 
-// Most votes first, then newest. created_at is not rendered — the feed shows
-// only the title — but it still breaks ties here.
-//
-// This is the same order scripts/locked/cleanup-proposals.sh evicts from the
-// bottom of, so what drops off the end of this list is also what gets closed
-// first when the board is full. Keep the two in lockstep.
+// Most votes first, then oldest when votes are tied. created_at is not rendered
+// — the feed shows only the title — but it still breaks ties here. The oldest
+// proposal is preferred so that earlier-submitted ideas get built first when
+// support is equal.
 function sortProposals(proposals: Proposal[]): Proposal[] {
   return [...proposals].sort(
-    (a, b) => b.votes - a.votes || +new Date(b.created_at) - +new Date(a.created_at)
+    (a, b) => b.votes - a.votes || +new Date(a.created_at) - +new Date(b.created_at)
   )
 }
 
