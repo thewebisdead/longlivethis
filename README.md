@@ -21,7 +21,7 @@ An agent screens the top proposals against the constitution, implements the firs
 The app manages it's own treasury. It pays for its own AI inference and its deployment. Use the funds wisely and propose methods for the app to live on.
 
 > [!NOTE]
-> By default the agent runs twice a day to implement the top proposal. The app can also trigger the agent to run so a good first proposal might be a better trigger mechanism.
+> By default the agent runs every hour to implement the top proposal. The app can also trigger the agent to run so a good first proposal might be a better trigger mechanism.
 
 ---
 
