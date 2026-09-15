@@ -1,3 +1,4 @@
+import HnScore from '@/components/HnScore'
 import ProposeForm from '@/components/ProposeForm'
 import ProposalFeed from '@/components/ProposalFeed'
 import VoteNotice from '@/components/VoteNotice'
@@ -48,6 +49,7 @@ export default async function Home({
   const message = voteMessage(await searchParams)
 
   const [proposals, balance] = await Promise.all([
+    // HnScore is rendered inline below — no data dependency to await here.
     listProposals().catch(() => []),
     walletAddress ? getUsdcBalance(walletAddress).catch(() => null) : null,
   ])
@@ -93,6 +95,7 @@ export default async function Home({
             </a>
           </>
         )}
+        <HnScore />
       </p>
 
       {message && <VoteNotice message={message} />}
