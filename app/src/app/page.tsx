@@ -6,6 +6,7 @@ import VoteNotice from '@/components/VoteNotice'
 import { repoUrl, walletAddress } from '@/lib/config'
 import { listProposals } from '@/lib/github'
 import { getUsdcBalance } from '@/lib/treasury'
+import { getRunway } from '@/lib/runway'
 
 // Config comes from app.env on the VPS at runtime, not from the build —
 // render on every request, with the data inline.
@@ -49,10 +50,13 @@ export default async function Home({
 }) {
   const message = voteMessage(await searchParams)
 
-  const [proposals, balance] = await Promise.all([
+  const [proposals, balance, runway] = await Promise.all([
     // HnScore is rendered inline below — no data dependency to await here.
     listProposals().catch(() => []),
     walletAddress ? getUsdcBalance(walletAddress).catch(() => null) : null,
+    getRunway(() =>
+      walletAddress ? getUsdcBalance(walletAddress) : Promise.resolve(0)
+    ).catch(() => null),
   ])
 
   return (
@@ -62,6 +66,19 @@ export default async function Home({
           {balance === null ? '…' : `$${balance.toFixed(2)}`}
         </p>
         <p className="mt-3 text-xs tracking-[0.18em] uppercase text-muted">treasury · USDC</p>
+        {runway != null && runway.runwayDays !== Infinity && (
+          <p
+            className={`mt-1 text-xs tracking-[0.18em] uppercase ${
+              runway.level === 'safe'
+                ? 'text-muted'
+                : runway.level === 'reduced'
+                  ? 'text-yellow-400'
+                  : 'text-red-400'
+            }`}
+          >
+            {Math.floor(runway.runwayDays)} days left
+          </p>
+        )}
         <DonateButton />
       </div>
 

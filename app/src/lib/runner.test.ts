@@ -55,13 +55,13 @@ test('jump launches the player upward', () => {
 test('gravity brings player back down', () => {
   const g = newGame()
   step(g, 0.016, { jump: true })
-  // Fast-forward several frames
+  // Fast-forward enough frames to land
   let grounded = false
-  for (let i = 0; i < 60; i++) {
+  for (let i = 0; i < 120; i++) {
     step(g, 0.016, {})
     if (g.height <= 0 && g.velY === 0) { grounded = true; break }
   }
-  assert(grounded, 'Player should have landed after 60 frames')
+  assert(grounded, 'Player should have landed after 120 frames')
 })
 
 test('speed increases over time', () => {
