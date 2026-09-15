@@ -1,13 +1,13 @@
 name: agent
 
-# Fallback sweep every 12 hours (off-:00 — GitHub cron is best-effort and the
+# Fallback sweep every hour (off-:00 — GitHub cron is best-effort and the
 # :00 slots are congested/skipped). Runs are otherwise event-driven: the app's
 # GitHub App credentials include actions:write, so app features may dispatch
 # this workflow on demand (e.g. "implement when a proposal reaches a 2/3
 # majority") — the base app ships with no such trigger.
 on:
   schedule:
-    - cron: "23 */12 * * *"
+    - cron: "23 * * * *"
   workflow_dispatch:
 
 permissions:
