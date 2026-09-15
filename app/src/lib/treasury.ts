@@ -3,7 +3,9 @@ import { baseRpcUrl } from './config.ts'
 import { defineCache } from './cache.ts'
 
 // Contract address is a fixed property of Base mainnet, not deployment config.
-const USDC_ADDRESS = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'
+// Exported so the donation link (same token) and the balance read share one
+// source of truth for the USDC contract.
+export const USDC_ADDRESS = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'
 const BALANCE_OF_SELECTOR = '0x70a08231'
 
 // The public RPC is rate-limited; one call per minute serves every visitor.

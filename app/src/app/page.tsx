@@ -1,3 +1,4 @@
+import DonateButton from '@/components/DonateButton'
 import HnScore from '@/components/HnScore'
 import ProposeForm from '@/components/ProposeForm'
 import ProposalFeed from '@/components/ProposalFeed'
@@ -61,6 +62,7 @@ export default async function Home({
           {balance === null ? '…' : `$${balance.toFixed(2)}`}
         </p>
         <p className="mt-3 text-xs tracking-[0.18em] uppercase text-muted">treasury · USDC</p>
+        <DonateButton />
       </div>
 
       <p className="text-[1.35rem] font-bold leading-tight mb-2">
