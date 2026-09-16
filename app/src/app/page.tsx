@@ -8,6 +8,7 @@ import { listProposals } from '@/lib/github'
 import { getUsdcBalance } from '@/lib/treasury'
 import { getRunway } from '@/lib/runway'
 import { revalidateSnapshot } from '@/lib/snapshot'
+import { runGuardedTrigger } from '@/lib/agentTrigger'
 
 // Config comes from app.env on the VPS at runtime, not from the build —
 // render on every request, with the data inline.
@@ -60,10 +61,9 @@ export default async function Home({
     ).catch(() => null),
   ])
 
-  // Background revalidation: after rendering the live page, kick off a
-  // snapshot generation so the next visitor hits Caddy's cached copy. Fire
-  // and forget — never block the response on this.
+  // Background tasks: fire and forget — never block the response on this.
   revalidateSnapshot()
+  runGuardedTrigger().catch(() => null)
 
   return (
     <main className="flex-1 w-full max-w-180 mx-auto px-6 py-12">
