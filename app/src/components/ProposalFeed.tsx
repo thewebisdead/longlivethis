@@ -89,6 +89,18 @@ export default function ProposalFeed({ proposals }: { proposals: Proposal[] }) {
                 {p.title} <span className="text-muted">#{p.id}</span>
               </span>
             </a>
+            {/* Share card for this proposal — every link post is distribution.
+                A tiny glyph opens /api/og?proposal=N, the dynamic card with
+                the balance, runway and this proposal's votes/title. */}
+            <a
+              href={`/api/og?proposal=${p.id}`}
+              target="_blank"
+              rel="noopener"
+              title={`Share image for #${p.id} (treasury + runway)`}
+              className="shrink-0 text-muted hover:text-fg no-underline text-[0.85rem]"
+            >
+              🔗
+            </a>
           </div>
         ))
       )}
