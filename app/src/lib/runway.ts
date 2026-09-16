@@ -12,6 +12,7 @@
 
 import { readFile, writeFile, mkdir, rename } from 'node:fs/promises'
 import { join } from 'node:path'
+import { recordBalance, recordRunCost } from './ledger.ts'
 
 // ─── Types ────────────────────────────────────────────────────────────────
 
@@ -210,6 +211,11 @@ export async function getRunway(
     getBalance().catch(() => 0),
     readLedger(),
   ])
+  // Incoming transfers are read as balance deltas: any rise over the last
+  // observed balance is appended to the public ledger. This runs on every
+  // treasury read, so the ledger's transfer history stays live with no extra
+  // service. Best-effort — a failure here must not break the runway page.
+  await recordBalance(balance).catch(() => null)
   return computeRunway(balance, entries)
 }
 
@@ -219,11 +225,17 @@ export async function getRunway(
  * code that knows a run's cost) pass the inference cost; the total stored is
  * inference + a per-run hosting slice.
  */
-export async function recordInferenceRun(inferenceCostUsdc: number): Promise<void> {
+export async function recordInferenceRun(
+  inferenceCostUsdc: number,
+  runId?: string,
+): Promise<void> {
   // Attribute one day-proportional hosting slice per run. It is stored so the
   // ledger is a faithful record of what a run really cost. Daily burn still
   // counts the full hosting floor separately via computeRunway; the slice is
   // for the ledger's own per-run record.
   const hostingSlice = HOSTING_COST_PER_DAY
   await recordRun(inferenceCostUsdc, hostingSlice)
+  // Mirror the run into the public, append-only ledger shown at /ledger — the
+  // transparency record that never prunes, unlike the runway ledger above.
+  await recordRunCost(inferenceCostUsdc, hostingSlice, runId)
 }
