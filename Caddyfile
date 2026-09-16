@@ -16,6 +16,17 @@
 #     Enforcement is unconditional in both directions: init turns origin pulls on
 #     at the zone and reads the setting back, because an origin demanding a
 #     client cert in front of a zone that does not present one serves only 520.
+#
+# Static snapshot + stale-while-revalidate:
+#   For `/` (the homepage), Caddy serves a prerendered HTML snapshot from
+#   /var/lib/caddy/snapshots/index.html if it exists. This file is written by
+#   the app's /api/snapshot endpoint, which the app calls after every
+#   non-cached request. While the snapshot is being regenerated in the
+#   background, Caddy serves the stale copy to new visitors — a HN spike then
+#   costs almost nothing, because most requests are served directly from the
+#   filesystem without touching Node.js at all. The Cache-Control header tells
+#   Cloudflare (+ any downstream cache) the same: serve stale for up to 7 days
+#   while revalidating.
 longlivethis.site {
   tls {
     client_auth {
@@ -23,6 +34,27 @@ longlivethis.site {
       trusted_ca_cert_file /etc/caddy/cloudflare-origin.pem
     }
   }
-  reverse_proxy localhost:3000
+
   encode gzip
+
+  # Snapshot cache for the root path: serve prerendered HTML when available,
+  # fall back to the live app.
+  handle_path / {
+    @cached file /var/lib/caddy/snapshots/index.html
+    handle @cached {
+      root * /var/lib/caddy/snapshots
+      file_server
+      header Cache-Control "public, s-maxage=60, stale-while-revalidate=604800"
+    }
+    handle {
+      reverse_proxy localhost:3000 {
+        header_up X-Snapshot-Serve "live"
+      }
+    }
+  }
+
+  # All other paths proxy straight through — only the homepage is cached.
+  handle {
+    reverse_proxy localhost:3000
+  }
 }

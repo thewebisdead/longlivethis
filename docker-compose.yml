@@ -9,3 +9,6 @@ services:
       PORT: "3000"
     volumes:
       - /var/lib/longlive/state:/var/lib/longlive/state
+      # Snapshot cache directory — shared with Caddy so the app can write the
+      # prerendered HTML and Caddy can serve it without hitting the proxy.
+      - /var/lib/caddy/snapshots:/var/lib/caddy/snapshots:rw
