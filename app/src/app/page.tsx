@@ -118,6 +118,12 @@ export default async function Home({
             >
               GitHub
             </a>
+            <a
+              href="/ledger"
+              className="text-muted underline underline-offset-2 hover:text-fg"
+            >
+              Ledger
+            </a>
           </>
         )}
         <HnScore />
