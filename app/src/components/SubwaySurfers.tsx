@@ -46,13 +46,18 @@ export default function SubwaySurfers() {
 
       const s = stateRef.current!
       if (s.alive && !overRef.current && !document.hidden) {
-        // Consume the transient jump/roll inputs once.
+        // Consume all transient (edge-triggered) inputs once per frame: jump,
+        // roll, and now left/right move exactly one lane per press/tap.
         const input = inputRef.current
         const jump = input.jump
         const roll = input.roll
+        const left = input.left
+        const right = input.right
         input.jump = false
         input.roll = false
-        step(s, dt, { left: input.left, right: input.right, jump, roll })
+        input.left = false
+        input.right = false
+        step(s, dt, { left, right, jump, roll })
         if (!s.alive) {
           overRef.current = true
           if (s.score > bestRef.current) {
@@ -112,8 +117,9 @@ export default function SubwaySurfers() {
         case 'ArrowUp':
         case 'w':
         case 'W':
+          i.jump = true
+          break
         case ' ':
-          e.preventDefault()
           i.jump = true
           break
         case 'ArrowDown':
@@ -123,30 +129,16 @@ export default function SubwaySurfers() {
           break
       }
     }
-    const onKeyUp = (e: KeyboardEvent) => {
-      const i = inputRef.current
-      switch (e.key) {
-        case 'ArrowLeft':
-        case 'a':
-        case 'A':
-          i.left = false
-          break
-        case 'ArrowRight':
-        case 'd':
-        case 'D':
-          i.right = false
-          break
-      }
-    }
     window.addEventListener('keydown', onKey)
-    window.addEventListener('keyup', onKeyUp)
     return () => {
       window.removeEventListener('keydown', onKey)
-      window.removeEventListener('keyup', onKeyUp)
     }
   }, [])
 
-  // Touch/mouse controls on the canvas — no gesture needed to play.
+  // Touch/mouse controls on the canvas — no gesture needed to play. Each tap
+  // is a discrete event: left/right fire exactly once and are consumed by the
+  // next frame, like jump/roll, so they never jam the controls for the
+  // session.
   const onPointer = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const rect = e.currentTarget.getBoundingClientRect()
     const x = e.clientX - rect.left
@@ -155,15 +147,15 @@ export default function SubwaySurfers() {
       start()
       return
     }
-    const s = stateRef.current!
+    const i = inputRef.current
     if (y < rect.height * 0.4) {
-      inputRef.current.jump = true
+      i.jump = true
     } else if (y > rect.height * 0.7) {
-      inputRef.current.roll = true
+      i.roll = true
     } else if (x < rect.width * 0.45) {
-      inputRef.current.left = true
+      i.left = true
     } else if (x > rect.width * 0.55) {
-      inputRef.current.right = true
+      i.right = true
     }
   }
 
@@ -192,7 +184,7 @@ export default function SubwaySurfers() {
           onPointerDown={onPointer}
         />
         <div className="bg-black/70 px-2 py-1 text-[0.55rem] text-muted">
-          ←→ jump ↑ · roll ↓ · or tap
+          ←→ switch lane · ↑ jump · ↓ roll · tap to play
         </div>
       </div>
     </div>
@@ -223,9 +215,11 @@ function draw(canvas: HTMLCanvasElement | null, s: RunnerState): void {
   ctx.fillRect(0, horizon, w, h - horizon)
 
   // Perspective helper: map world (laneOffset, z) to screen (x, y, scale).
+  // scale = cz/(z + cz) — 1 at the player and falling off with distance — so
+  // the near track is huge and visible instead of collapsing to a few pixels.
   const proj = (laneOffset: number, z: number) => {
     const d = Math.max(0.1, z + cz)
-    const scale = 1 / d
+    const scale = cz / d
     const x = w / 2 + laneOffset * ((w / 2) * 0.55) * scale
     const y = horizon + (ground - horizon) * scale
     return { x, y, scale }
@@ -243,19 +237,21 @@ function draw(canvas: HTMLCanvasElement | null, s: RunnerState): void {
     ctx.stroke()
   }
 
-  // Draw runner at the base (bottom center), jumping height lifts it up.
+  // Draw runner at the base of its lane (the player is centred on the
+  // horizontal axis only when in the middle lane), jumping height lifts it up.
   const playerZ = 0.6
-  const p = proj(0, playerZ)
+  const playerLaneOffset = (s.lane - 1) * 1.5
+  const p = proj(playerLaneOffset, playerZ)
   const jumpLift = s.height * 22 * p.scale
   const runY = p.y
-  drawRunner(ctx, w / 2, runY - jumpLift, p.scale, s)
+  drawRunner(ctx, p.x, runY - jumpLift, p.scale, s)
 
   // Draw tiles (obstacles/coins) farthest → nearest so nearer overlap older.
   const sorted = [...s.tiles].sort((a, b) => b.z - a.z)
   for (const t of sorted) {
     if (t.z > 30 || t.z + t.length < -1) continue
     const laneOffset = (t.lane - 1) * 1.5
-    drawTile(ctx, t, laneOffset, proj)
+    drawTile(ctx, t, laneOffset, proj, w)
   }
 
   // Game over overlay
@@ -278,7 +274,10 @@ function draw(canvas: HTMLCanvasElement | null, s: RunnerState): void {
 function drawRunner(ctx: CanvasRenderingContext2D, x: number, y: number, scale: number, s: RunnerState): void {
   ctx.save()
   ctx.translate(x, y)
-  ctx.scale(scale * 3, scale * 3)
+  // ~40px tall at the player's scale (scale≈1); the runner's body+head spans
+  // about 14 world units, so a factor of 3 lands right at ~40px.
+  const rScale = scale * 3
+  ctx.scale(rScale, rScale)
 
   // Simple 3D-ish runner: body + head, bobbing as it runs.
   const bob = s.alive ? Math.sin(s.runTime * 20) * 0.8 : 0
@@ -313,16 +312,15 @@ function drawTile(
   ctx: CanvasRenderingContext2D,
   t: Tile,
   laneOffset: number,
-  proj: (lane: number, z: number) => { x: number; y: number; scale: number }
+  proj: (lane: number, z: number) => { x: number; y: number; scale: number },
+  w: number
 ): void {
-  const front = proj(laneOffset, t.z)
-  const back = proj(laneOffset, t.z + t.length)
-
   if (t.kind === 'coin') {
     // A small glowing coin, bobbing gently.
     const wobble = Math.sin(t.z * 0.8 + t.id) * 0.02
     const pos = proj(laneOffset, t.z + 0.5 + wobble)
-    const r = Math.max(1.5, 4 * pos.scale)
+    // No floor — the projection already scales the coin naturally with depth.
+    const r = Math.max(1, 4 * pos.scale)
     ctx.fillStyle = '#ffd700'
     ctx.beginPath()
     ctx.arc(pos.x, pos.y, r, 0, Math.PI * 2)
@@ -333,10 +331,11 @@ function drawTile(
     return
   }
 
-  // Obstacle body from back (far) to front (near).
-  const laneW = 1.5
   const pBack = proj(laneOffset, t.z + t.length)
   const pFront = proj(laneOffset, t.z)
+  // Width of one lane on screen at the near plane, in px: the same factor used
+  // to space the lane lines, so a tile fills its lane (not a 1px sliver).
+  const laneW = 1.5 * ((w / 2) * 0.55) * pFront.scale
 
   if (t.kind === 'gap') {
     // A hole in the track — draw darker void.
@@ -344,32 +343,38 @@ function drawTile(
     ctx.beginPath()
     ctx.moveTo(pBack.x, pBack.y)
     ctx.lineTo(pFront.x, pFront.y)
-    ctx.lineTo(pFront.x + laneW * pFront.scale, pFront.y)
-    ctx.lineTo(pBack.x + laneW * pBack.scale, pBack.y)
+    ctx.lineTo(pFront.x + laneW, pFront.y)
+    ctx.lineTo(pBack.x + (1.5 * ((w / 2) * 0.55) * pBack.scale), pBack.y)
     ctx.closePath()
     ctx.fill()
     return
   }
 
   const height = t.kind === 'barrier' ? 6 : 9
-  // Train/barrier as a 3D box.
-  const hF = height * pFront.scale
-  const hB = height * pBack.scale
+  // Train/barrier as a 3D box. Heights scale with the projection as well, and
+  // are multiplied to read clearly on screen (compare with the ~40px runner).
+  const heightMul = 4.5
+  const hF = height * heightMul * pFront.scale
+  const hB = height * heightMul * pBack.scale
+  const wB = 1.5 * ((w / 2) * 0.55) * pBack.scale
   // Roof
   ctx.fillStyle = t.kind === 'barrier' ? '#b08d3a' : '#5ec2e6'
   ctx.beginPath()
   ctx.moveTo(pBack.x, pBack.y - hB)
   ctx.lineTo(pFront.x, pFront.y - hF)
-  ctx.lineTo(pFront.x + laneW * pFront.scale, pFront.y - hF)
-  ctx.lineTo(pBack.x + laneW * pBack.scale, pBack.y - hB)
+  ctx.lineTo(pFront.x + laneW, pFront.y - hF)
+  ctx.lineTo(pBack.x + wB, pBack.y - hB)
   ctx.closePath()
   ctx.fill()
   // Face
   ctx.fillStyle = t.kind === 'barrier' ? '#8a6d1f' : '#4aa8cc'
-  ctx.fillRect(pFront.x, pFront.y - hF, laneW * pFront.scale, hF)
+  ctx.fillRect(pFront.x, pFront.y - hF, laneW, hF)
+  // A front bumper/edge for depth.
+  ctx.fillStyle = t.kind === 'barrier' ? 'rgba(0,0,0,0.25)' : 'rgba(255,255,255,0.25)'
+  ctx.fillRect(pFront.x, pFront.y - hF, laneW, Math.max(1, pFront.scale * 2))
   // Windows on trains for a hint of the original genre without any asset.
   if (t.kind === 'train') {
     ctx.fillStyle = 'rgba(200,230,255,0.9)'
-    ctx.fillRect(pFront.x + 2 * pFront.scale, pFront.y - hF * 0.75, laneW * pFront.scale - 4 * pFront.scale, hF * 0.25)
+    ctx.fillRect(pFront.x + 2 * pFront.scale, pFront.y - hF * 0.75, laneW - 4 * pFront.scale, hF * 0.25)
   }
 }
