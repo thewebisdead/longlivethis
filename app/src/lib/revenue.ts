@@ -282,7 +282,11 @@ export async function setRevenueStatus(
   if (!p) return null
   if (p.status !== status) {
     p.status = status
-    p.updatedAt = Date.now()
+    // A transition must be observably later than the previous state. Two
+    // transitions inside the same millisecond would otherwise get identical
+    // timestamps — monotonicly bump past createdAt/updatedAt so `updatedAt`
+    // always strictly increases (keeps sorting and equality checks sound).
+    p.updatedAt = Math.max(Date.now(), p.updatedAt + 1, p.createdAt + 1)
     await writeRevenueStore(store)
   }
   return p
