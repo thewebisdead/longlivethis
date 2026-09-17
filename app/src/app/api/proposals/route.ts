@@ -5,6 +5,7 @@ import {
   normalizeText,
   PROPOSAL_HARD_CAP,
 } from '@/lib/github'
+import { recordPriorityProposal } from '@/lib/survival'
 
 export const dynamic = 'force-dynamic'
 
@@ -55,6 +56,9 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'an identical proposal is already open' }, { status: 409 })
     }
     const proposal = await createProposal(trimmed)
+    // If this proposal reduces costs or generates revenue, record it for
+    // emergency-mode priority tracking (safe to ignore failures).
+    recordPriorityProposal(trimmed).catch(() => null)
     return NextResponse.json(proposal, { status: 201 })
   } catch (err) {
     console.error('proposals POST failed:', err)

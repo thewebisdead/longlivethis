@@ -21,11 +21,17 @@
 
 import { randomBytes } from 'node:crypto'
 import { readFile, writeFile, mkdir, rename } from 'node:fs/promises'
-import { github, githubAppConfigured, walletAddress } from './config.ts'
+import { github, githubAppConfigured, walletAddress, emergencyThresholdDays } from './config.ts'
 import { getRunway } from './runway.ts'
 import { getUsdcBalance } from './treasury.ts'
 import { decideRun } from './spendGuard.ts'
+import {
+  evaluateSurvivalMode,
+  recordSkippedRun,
+  recordDownshiftedRun,
+} from './survival.ts'
 import type { SpendGuardDecision } from './spendGuard'
+import type { SurvivalLevel } from './survival'
 
 // ─── Config ───────────────────────────────────────────────────────────────
 
@@ -176,6 +182,10 @@ export interface DispatchResult {
   runId: string | null
   /** Error message when dispatch itself failed, else null. */
   error: string | null
+  /** Current emergency survival mode level. */
+  survivalLevel: SurvivalLevel
+  /** Emergency threshold in days that drove the mode. */
+  emergencyThresholdDays: number
 }
 
 /**
@@ -200,26 +210,41 @@ export async function runGuardedTrigger(
   const now = Date.now()
   const cadenceMs = opts.cadenceMs ?? DEFAULT_CADENCE_MS
 
-  // Cadence: don't re-attempt until the cadence has elapsed since the last
-  // attempt, unless force is set (a manual run-now).
-  const throttled = !opts.force &&
-    state.lastAttemptTs !== null &&
-    now - state.lastAttemptTs < cadenceMs
-
   // Read the runway. If the treasury/RPC is unreachable we treat it as
   // runway 0 → paused → skip (the conservative, expensive-safe reading).
-  let runway: { level: 'safe' | 'reduced' | 'critical' | 'paused'; runwayDays: number }
+  let runway: { level: 'safe' | 'reduced' | 'critical' | 'paused'; runwayDays: number; dailyBurn: number }
   let runwayRich = true
   try {
     const info = await getRunway(
       () => (walletAddress ? getUsdcBalance(walletAddress) : Promise.resolve(0))
     )
-    runway = { level: info.level, runwayDays: info.runwayDays }
+    runway = { level: info.level, runwayDays: info.runwayDays, dailyBurn: info.dailyBurn }
     runwayRich = true
   } catch {
-    runway = { level: 'paused', runwayDays: 0 }
+    runway = { level: 'paused', runwayDays: 0, dailyBurn: 0 }
     runwayRich = false
   }
+
+  // Evaluate emergency survival mode first — this determines whether we are
+  // in an emergency/critical/paused state and reduces spend accordingly.
+  const survivalState = await evaluateSurvivalMode(runway, emergencyThresholdDays)
+  const survivalLevel = survivalState.level
+
+  // In emergency/critical/paused modes the cadence tightens so unnecessary
+  // runs fire less often — fewer runs, less burn. The spend guard still
+  // decides run vs downshift vs skip on top of that.
+  const effectiveCadence = (() => {
+    if (survivalLevel === 'paused') return DEFAULT_CADENCE_MS * 6 // 6h — effectively a single daily window
+    if (survivalLevel === 'critical') return DEFAULT_CADENCE_MS * 3 // 3h
+    if (survivalLevel === 'emergency') return DEFAULT_CADENCE_MS * 2 // 2h
+    return cadenceMs
+  })()
+
+  // Cadence: don't re-attempt until the cadence has elapsed since the last
+  // attempt, unless force is set (a manual run-now).
+  const throttled = !opts.force &&
+    state.lastAttemptTs !== null &&
+    now - state.lastAttemptTs < effectiveCadence
 
   const decision = decideRun(runway)
 
@@ -239,6 +264,8 @@ export async function runGuardedTrigger(
     runwayRich,
     runId: null,
     error: null,
+    survivalLevel,
+    emergencyThresholdDays,
   }
 
   if (throttled) {
@@ -246,13 +273,23 @@ export async function runGuardedTrigger(
     return result
   }
 
-  // Skip: no dispatch, no spend. Record and stop.
+  // Skip: no dispatch, no spend. Record (for survival tracking) and stop.
   if (decision.mode === 'skip') {
+    if (['emergency', 'critical', 'paused'].includes(survivalLevel)) {
+      await recordSkippedRun().catch(() => null)
+    }
     await writeTriggerState(nextState)
     return result
   }
 
-  // Run or downshift: dispatch the frozen agent workflow.
+  // Downshift: record it for survival tracking.
+  if (decision.mode === 'downshift') {
+    await recordDownshiftedRun().catch(() => null)
+  }
+
+  // Run or downshift: dispatch the frozen agent workflow. In emergency mode
+  // the dispatch only happens for lean runs (already enforced above by the
+  // spend guard and the tightened cadence); the workflow itself is untouched.
   const target = getGhDispatchTarget()
   if (!target) {
     result.error = 'GitHub credentials not configured — cannot dispatch agent.yml'

@@ -3,7 +3,7 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 
-export default function ProposeForm() {
+export default function ProposeForm({ emergencyActive = false }: { emergencyActive?: boolean }) {
   const [text, setText] = useState('')
   const router = useRouter()
 
@@ -27,6 +27,12 @@ export default function ProposeForm() {
 
   return (
     <div>
+      {emergencyActive && (
+        <p className="mb-3 text-[0.72rem] text-amber-300 border border-amber-500/30 bg-amber-950/20 rounded px-3 py-2">
+          ⚠ Emergency Survival Mode: proposals that <strong>reduce costs</strong> or{' '}
+          <strong>generate revenue</strong> are prioritized for implementation.
+        </p>
+      )}
       <textarea
         value={text}
         onChange={(e) => setText(e.target.value)}
