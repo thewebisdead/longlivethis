@@ -1,6 +1,12 @@
 import { repoUrl } from '@/lib/config'
 import type { Proposal } from '@/lib/types'
 
+// A proposal with an emergency-priority classification attached (used by the
+// feed to surface cost-saving / revenue proposals during emergency mode).
+export interface RankedProposal extends Proposal {
+  priority: 'cost-saving' | 'revenue' | 'standard'
+}
+
 // How many proposals the page renders. The board can legitimately hold more
 // (up to the 500 hard cap in lib/github.ts) after a burst the cleanup workflow
 // has not swept yet, and nobody scrolls 500 rows. Display only — the duplicate
@@ -11,12 +17,11 @@ const DISPLAY_MAX = 100
 // — the feed shows only the title — but it still breaks ties here. The oldest
 // proposal is preferred so that earlier-submitted ideas get built first when
 // support is equal.
-function sortProposals(proposals: Proposal[]): Proposal[] {
+function sortProposals<T extends Proposal>(proposals: T[]): T[] {
   return [...proposals].sort(
     (a, b) => b.votes - a.votes || +new Date(a.created_at) - +new Date(b.created_at)
   )
 }
-
 // Voting is a form submission, not a fetch: /api/vote redirects to GitHub's
 // consent screen and the callback redirects back here, so the whole flow is
 // plain navigation. That is why this stays a server component with no client
@@ -46,8 +51,27 @@ function VoteButton({ issue, dir }: { issue: number; dir: 'up' | 'down' }) {
   )
 }
 
-export default function ProposalFeed({ proposals }: { proposals: Proposal[] }) {
+export default function ProposalFeed({
+  proposals,
+  emergencyActive = false,
+}: {
+  proposals: RankedProposal[]
+  emergencyActive?: boolean
+}) {
   const ranked = sortProposals(proposals)
+
+  // In emergency mode, cost-saving and revenue proposals are surfaced first.
+  // The sort still respects votes so the community voice is not drowned;
+  // priority only breaks near-ties.
+  if (emergencyActive) {
+    ranked.sort(
+      (a, b) =>
+        Number(b.priority !== 'standard') - Number(a.priority !== 'standard') ||
+        b.votes - a.votes ||
+        +new Date(a.created_at) - +new Date(b.created_at)
+    )
+  }
+
   const rows = ranked.slice(0, DISPLAY_MAX)
   const hidden = ranked.length - rows.length
 
@@ -88,6 +112,17 @@ export default function ProposalFeed({ proposals }: { proposals: Proposal[] }) {
               <span className="block text-[1rem] leading-normal group-hover:underline">
                 {p.title} <span className="text-muted">#{p.id}</span>
               </span>
+              {emergencyActive && p.priority !== 'standard' && (
+                <span
+                  className={`mt-1 inline-block text-[0.65rem] font-bold uppercase tracking-wider px-2 py-0.5 rounded ${
+                    p.priority === 'cost-saving'
+                      ? 'bg-amber-900/40 text-amber-300 border border-amber-500/40'
+                      : 'bg-emerald-900/40 text-emerald-300 border border-emerald-500/40'
+                  }`}
+                >
+                  {p.priority === 'cost-saving' ? '▼ cost-saving' : '▲ revenue'}
+                </span>
+              )}
             </a>
             {/* Share card for this proposal — every link post is distribution.
                 A tiny glyph opens /api/og?proposal=N, the dynamic card with

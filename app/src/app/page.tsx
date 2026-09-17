@@ -3,10 +3,11 @@ import HnScore from '@/components/HnScore'
 import ProposeForm from '@/components/ProposeForm'
 import ProposalFeed from '@/components/ProposalFeed'
 import VoteNotice from '@/components/VoteNotice'
-import { repoUrl, walletAddress } from '@/lib/config'
+import { repoUrl, walletAddress, emergencyThresholdDays } from '@/lib/config'
 import { listProposals } from '@/lib/github'
 import { getUsdcBalance } from '@/lib/treasury'
 import { getRunway } from '@/lib/runway'
+import { getSurvivalInfo, proposalPriorityLabel } from '@/lib/survival'
 import { revalidateSnapshot } from '@/lib/snapshot'
 import { runGuardedTrigger } from '@/lib/agentTrigger'
 
@@ -52,14 +53,24 @@ export default async function Home({
 }) {
   const message = voteMessage(await searchParams)
 
-  const [proposals, balance, runway] = await Promise.all([
+  const [proposals, balance, runway, survival] = await Promise.all([
     // HnScore is rendered inline below — no data dependency to await here.
     listProposals().catch(() => []),
     walletAddress ? getUsdcBalance(walletAddress).catch(() => null) : null,
     getRunway(() =>
       walletAddress ? getUsdcBalance(walletAddress) : Promise.resolve(0)
     ).catch(() => null),
+    getSurvivalInfo(emergencyThresholdDays).catch(() => null),
   ])
+
+  const survivalActive = survival !== null && survival.active
+
+  // Annotate proposals with their emergency-priority label so the feed can
+  // surface cost-saving / revenue-generating proposals during emergency.
+  const annotatedProposals = proposals.map((p) => ({
+    ...p,
+    priority: proposalPriorityLabel(p.text),
+  }))
 
   // Background tasks: fire and forget — never block the response on this.
   revalidateSnapshot()
@@ -86,7 +97,53 @@ export default async function Home({
           </p>
         )}
         <DonateButton />
+        {survival !== null && (
+          <div
+            className={`mt-3 inline-block px-3 py-1 text-xs font-bold uppercase tracking-wider rounded-md ${
+              survivalActive
+                ? survival.level === 'paused'
+                  ? 'bg-red-900/40 text-red-300 border border-red-500/40'
+                  : survival.level === 'critical'
+                    ? 'bg-red-900/30 text-red-300 border border-red-500/30'
+                    : 'bg-amber-900/30 text-amber-300 border border-amber-500/30'
+                : survival.level === 'watch'
+                  ? 'bg-blue-900/30 text-blue-300 border border-blue-500/30'
+                  : 'bg-emerald-900/30 text-emerald-300 border border-emerald-500/30'
+            }`}
+          >
+            {survival.level === 'normal' && '● normal operation'}
+            {survival.level === 'watch' && '◔ watch mode'}
+            {survival.level === 'emergency' && '⚠ emergency survival mode'}
+            {survival.level === 'critical' && '⛔ critical mode'}
+            {survival.level === 'paused' && '■ paused — site only'}
+          </div>
+        )}
       </div>
+
+      {survival !== null && (
+        <div
+          className={`mb-6 rounded-lg border px-4 py-3 text-sm ${
+            survivalActive
+              ? 'border-red-500/40 bg-red-950/20 text-red-100'
+              : survival.level === 'watch'
+                ? 'border-blue-500/30 bg-blue-950/10 text-blue-100'
+                : 'border-emerald-500/30 bg-emerald-950/10 text-emerald-100'
+          }`}
+        >
+          <p className="font-bold">
+            {survivalActive ? 'Emergency Survival Mode is active' : 'Treasury status'}
+          </p>
+          <p className="mt-1 text-xs">{survival.policy}</p>
+          {survivalActive && (
+            <p className="mt-2 text-[0.7rem] opacity-80">
+              Runs skipped: {survival.runsSkipped} · Runs downshifted:{' '}
+              {survival.runsDownshifted} · Cost-saving proposals:{' '}
+              {survival.costSavingProposals} · Revenue proposals:{' '}
+              {survival.revenueProposals}
+            </p>
+          )}
+        </div>
+      )}
 
       <p className="text-[1.35rem] font-bold leading-tight mb-2">
         The web is dead, <a className='hover:underline' href='#'>longlivethis.site</a>!
@@ -131,8 +188,8 @@ export default async function Home({
 
       {message && <VoteNotice message={message} />}
 
-      <ProposeForm />
-      <ProposalFeed proposals={proposals} />
+      <ProposeForm emergencyActive={survivalActive} />
+      <ProposalFeed proposals={annotatedProposals} emergencyActive={survivalActive} />
     </main>
   )
 }

@@ -59,6 +59,21 @@ export const githubAppConfigured: boolean = Boolean(
   github.appId && github.appPrivateKey && github.appInstallationId
 )
 
+/**
+ * Emergency Survival Mode threshold, in runway days. When projected runway
+ * drops at or below this, the app enters emergency mode: it reduces
+ * unnecessary AI executions and prioritizes cost-saving / revenue-generating
+ * proposals. Configurable via the EMERGENCY_THRESHOLD_DAYS env var (defaults
+ * to 30, matching the existing "reduced" runway level).
+ */
+export const emergencyThresholdDays: number = (() => {
+  const raw = str('EMERGENCY_THRESHOLD_DAYS')
+  if (!raw) return 30
+  const n = Number(raw)
+  if (!Number.isFinite(n) || n <= 0) return 30
+  return n
+})()
+
 /** Public origin of this deployment — the OAuth redirect must be absolute. */
 export const publicUrl: string = url('PUBLIC_URL')
 
