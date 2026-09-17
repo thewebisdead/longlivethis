@@ -10,6 +10,8 @@ import { getRunway } from '@/lib/runway'
 import { getSurvivalInfo, proposalPriorityLabel } from '@/lib/survival'
 import { revalidateSnapshot } from '@/lib/snapshot'
 import { runGuardedTrigger } from '@/lib/agentTrigger'
+import { listRevenueProposals, revenueSummary } from '@/lib/revenue'
+import { donateUri } from '@/lib/donation'
 
 // Config comes from app.env on the VPS at runtime, not from the build —
 // render on every request, with the data inline.
@@ -53,7 +55,7 @@ export default async function Home({
 }) {
   const message = voteMessage(await searchParams)
 
-  const [proposals, balance, runway, survival] = await Promise.all([
+  const [proposals, balance, runway, survival, revenueProps] = await Promise.all([
     // HnScore is rendered inline below — no data dependency to await here.
     listProposals().catch(() => []),
     walletAddress ? getUsdcBalance(walletAddress).catch(() => null) : null,
@@ -61,6 +63,7 @@ export default async function Home({
       walletAddress ? getUsdcBalance(walletAddress) : Promise.resolve(0)
     ).catch(() => null),
     getSurvivalInfo(emergencyThresholdDays).catch(() => null),
+    listRevenueProposals().catch(() => []),
   ])
 
   const survivalActive = survival !== null && survival.active
@@ -144,6 +147,81 @@ export default async function Home({
           )}
         </div>
       )}
+
+      {revenueProps.length > 0 && (() => {
+        const rsum = revenueSummary(revenueProps)
+        return (
+          <div className="mb-8 border border-blue-500/30 rounded-lg px-4 py-4 bg-blue-950/10">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-[0.8rem] font-bold tracking-widest uppercase">
+                ☰ Funding opportunities
+              </h2>
+              <span className="text-[0.72rem] text-muted">
+                {rsum.openCount} open ·{' '}
+                {rsum.fundedCount} funded ·
+                {' '}${rsum.openTargetUsdc.toFixed(0)} needed
+              </span>
+            </div>
+            <div className="space-y-2">
+              {revenueProps.slice(0, 8).map((rp) => {
+                const fundLink = walletAddress
+                  ? donateUri(walletAddress, rp.minUsdc)
+                  : null
+                return (
+                  <div
+                    key={rp.id}
+                    className={`text-sm border rounded px-3 py-2 flex items-start gap-3 ${
+                      rp.status === 'funded'
+                        ? 'border-emerald-500/30 bg-emerald-950/15 opacity-70'
+                        : rp.status === 'claimed'
+                          ? 'border-amber-500/30 bg-amber-950/15'
+                          : 'border-muted/30'
+                    }`}
+                  >
+                    <div className="flex-1 min-w-0">
+                      <div className="font-semibold text-[0.85rem]">
+                        {rp.title}
+                        <span className="text-muted ml-2 text-[0.72rem]">
+                          ${rp.targetUsdc.toFixed(0)}
+                        </span>
+                        {rp.status !== 'open' && (
+                          <span
+                            className={`ml-2 text-[0.65rem] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded ${
+                              rp.status === 'funded'
+                                ? 'bg-emerald-900/40 text-emerald-300'
+                                : 'bg-amber-900/40 text-amber-300'
+                            }`}
+                          >
+                            {rp.status}
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-[0.72rem] text-muted mt-0.5 line-clamp-2">
+                        {rp.description}
+                      </p>
+                    </div>
+                    {rp.status === 'open' && fundLink && (
+                      <a
+                        href={fundLink}
+                        target="_blank"
+                        rel="noopener"
+                        className="shrink-0 bg-fg text-bg border border-fg px-3 py-1.5 text-[0.75rem] font-semibold no-underline hover:bg-bg hover:text-fg transition-colors"
+                      >
+                        Fund from ${rp.minUsdc}
+                      </a>
+                    )}
+                  </div>
+                )
+              })}
+              {revenueProps.length > 8 && (
+                <p className="text-[0.72rem] text-muted mt-1">
+                  +{revenueProps.length - 8} more
+                </p>
+              )}
+            </div>
+          </div>
+        )
+      })()}
 
       <p className="text-[1.35rem] font-bold leading-tight mb-2">
         The web is dead, <a className='hover:underline' href='#'>longlivethis.site</a>!
