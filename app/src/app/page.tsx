@@ -76,13 +76,13 @@ export default async function Home({
           <p
             className={`mt-1 text-xs tracking-[0.18em] uppercase ${
               runway.level === 'safe'
-                ? 'text-muted'
+                ? 'text-yellow-400'
                 : runway.level === 'reduced'
-                  ? 'text-yellow-400'
+                  ? 'text-orange-400'
                   : 'text-red-400'
             }`}
           >
-            {Math.floor(runway.runwayDays)} days left
+            dies in {Math.floor(runway.runwayDays)} days
           </p>
         )}
         <DonateButton />
