@@ -65,8 +65,8 @@ export async function GET(req: Request) {
       runwayColor = '#fff'
     } else {
       const days = Math.floor(runway.runwayDays)
-      runwayText = `runway: ${days} days`
-      runwayColor = runway.level === 'safe' ? '#4ade80' : runway.level === 'reduced' ? '#facc15' : '#f87171'
+      runwayText = `dies in ${days} days`
+      runwayColor = runway.level === 'safe' ? '#facc15' : runway.level === 'reduced' ? '#fb923c' : '#f87171'
     }
   }
 

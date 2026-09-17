@@ -6,7 +6,7 @@ import { getRunway } from '@/lib/runway'
 export const dynamic = 'force-dynamic'
 
 // GET /api/runway — expose the current runway so a client can render the
-// "N days left" readout and any consumer (or a future agent-side reader) can
+// "dies in N days" readout and any consumer (or a future agent-side reader) can
 // gate spend on the remaining treasury.
 //
 // Shape:
