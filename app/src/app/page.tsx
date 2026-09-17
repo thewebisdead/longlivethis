@@ -8,6 +8,9 @@ import { listProposals } from '@/lib/github'
 import { getUsdcBalance } from '@/lib/treasury'
 import { getRunway } from '@/lib/runway'
 import { getSurvivalInfo, proposalPriorityLabel } from '@/lib/survival'
+import { getMilestoneTimeline } from '@/lib/milestones'
+import { readLedger, summarize } from '@/lib/ledger'
+import type { MilestoneStats } from '@/lib/milestones'
 import { revalidateSnapshot } from '@/lib/snapshot'
 import { runGuardedTrigger } from '@/lib/agentTrigger'
 import { listRevenueProposals, revenueSummary } from '@/lib/revenue'
@@ -78,6 +81,27 @@ export default async function Home({
   // Background tasks: fire and forget — never block the response on this.
   revalidateSnapshot()
   runGuardedTrigger().catch(() => null)
+
+  // Evaluate survival milestones in the background so a crossed threshold is
+  // recorded as soon as the data reflects it, even without a /milestones visit.
+  // Best-effort — a failure here never blocks the page.
+  ;(async () => {
+    try {
+      const ledger = await readLedger().then(summarize)
+      const firstEntry = ledger.state.entries.length > 0
+        ? ledger.state.entries.reduce((a, b) => (a.ts < b.ts ? a : b))
+        : null
+      const stats: MilestoneStats = {
+        ageDays: 0,
+        proposalCount: proposals.length,
+        earnedUsdc: ledger.totalTransferredUsdc,
+        deploymentCount: ledger.state.entries.filter((e) => e.type === 'run').length,
+      }
+      await getMilestoneTimeline(stats, firstEntry?.ts ?? null)
+    } catch {
+      // Milestone tracking is best-effort.
+    }
+  })()
 
   return (
     <main className="flex-1 w-full max-w-180 mx-auto px-6 py-12">
@@ -258,6 +282,12 @@ export default async function Home({
               className="text-muted underline underline-offset-2 hover:text-fg"
             >
               Ledger
+            </a>
+            <a
+              href="/milestones"
+              className="text-muted underline underline-offset-2 hover:text-fg"
+            >
+              Milestones
             </a>
           </>
         )}
