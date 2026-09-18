@@ -2,6 +2,7 @@ import DonateButton from '@/components/DonateButton'
 import HnScore from '@/components/HnScore'
 import ProposeForm from '@/components/ProposeForm'
 import ProposalFeed from '@/components/ProposalFeed'
+import ProposalSuggestions from '@/components/ProposalSuggestions'
 import VoteNotice from '@/components/VoteNotice'
 import { repoUrl, walletAddress, emergencyThresholdDays } from '@/lib/config'
 import { listProposals } from '@/lib/github'
@@ -19,6 +20,7 @@ import { listProposalRevenue, totalAttributedRevenue } from '@/lib/revenuePropos
 import { listActualEconomics } from '@/lib/economics'
 import { donateUri } from '@/lib/donation'
 import { recordPageView, getAnalytics, formatAnalytics } from '@/lib/analytics'
+import { getSuggestions } from '@/lib/proposalSuggester'
 
 // Config comes from app.env on the VPS at runtime, not from the build —
 // render on every request, with the data inline.
@@ -74,6 +76,19 @@ export default async function Home({
     listProposalRevenue().catch(() => []),
     listActualEconomics().catch(() => []),
   ])
+
+  // Auto-suggested proposals — the app drafts ideas itself and offers them for
+  // adoption. Best-effort: a failure here hides the panel, never the page.
+  const suggestionState = await getSuggestions({
+    balanceUsdc: balance,
+    runwayDays: runway?.runwayDays ?? null,
+    proposals,
+  }).catch(() => ({
+    suggestions: [],
+    generatedAt: null,
+    stale: true,
+  }))
+  const suggestions = suggestionState.suggestions.map((s, i) => ({ ...s, id: i }))
 
   // Attributed revenue per implemented revenue proposal.
   const totalRevenue = totalAttributedRevenue(revenueRecords)
@@ -366,6 +381,13 @@ export default async function Home({
       {message && <VoteNotice message={message} />}
 
       <ProposeForm emergencyActive={survivalActive} />
+      {suggestions.length > 0 && (
+        <ProposalSuggestions
+          suggestions={suggestions}
+          generatedAt={suggestionState.generatedAt}
+          emergencyActive={survivalActive}
+        />
+      )}
       <ProposalFeed
         proposals={annotatedProposals}
         emergencyActive={survivalActive}
