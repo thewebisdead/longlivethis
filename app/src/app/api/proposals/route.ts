@@ -6,6 +6,7 @@ import {
   PROPOSAL_HARD_CAP,
 } from '@/lib/github'
 import { recordPriorityProposal } from '@/lib/survival'
+import type { ProposalCategory } from '@/lib/types'
 
 export const dynamic = 'force-dynamic'
 
@@ -24,9 +25,14 @@ export async function POST(req: Request) {
   // GitHub calls report. Unguarded, both `req.json()` on non-JSON and `.trim()`
   // on a non-string `text` throw straight out of the handler as an opaque 500.
   let trimmed: string
+  let category: ProposalCategory = 'standard'
   try {
-    const { text } = (await req.json()) as { text?: unknown }
-    trimmed = typeof text === 'string' ? text.trim() : ''
+    const body = (await req.json()) as { text?: unknown; category?: unknown }
+    trimmed = typeof body.text === 'string' ? body.text.trim() : ''
+    const cat = body.category
+    if (cat === 'feature' || cat === 'revenue' || cat === 'cost-saving') {
+      category = cat
+    }
   } catch {
     return NextResponse.json({ error: 'invalid JSON body' }, { status: 400 })
   }
@@ -52,10 +58,14 @@ export async function POST(req: Request) {
       )
     }
     const normalized = normalizeText(trimmed)
-    if (open.some((p) => normalizeText(p.text) === normalized)) {
+    // Strip category metadata from stored proposals' text for dedupe so a
+    // revenue proposal and a feature proposal with the same core text are
+    // properly detected as duplicates.
+    const stripCategory = (t: string) => t.replace(/<!--\s*category:\s*\S+\s*-->\s*/g, '')
+    if (open.some((p) => normalizeText(stripCategory(p.text)) === normalized)) {
       return NextResponse.json({ error: 'an identical proposal is already open' }, { status: 409 })
     }
-    const proposal = await createProposal(trimmed)
+    const proposal = await createProposal(trimmed, category)
     // If this proposal reduces costs or generates revenue, record it for
     // emergency-mode priority tracking (safe to ignore failures).
     recordPriorityProposal(trimmed).catch(() => null)

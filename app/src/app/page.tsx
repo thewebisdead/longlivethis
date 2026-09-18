@@ -14,6 +14,7 @@ import type { MilestoneStats } from '@/lib/milestones'
 import { revalidateSnapshot } from '@/lib/snapshot'
 import { runGuardedTrigger } from '@/lib/agentTrigger'
 import { listRevenueProposals, revenueSummary } from '@/lib/revenue'
+import { listProposalRevenue, totalAttributedRevenue } from '@/lib/revenueProposal'
 import { donateUri } from '@/lib/donation'
 
 // Config comes from app.env on the VPS at runtime, not from the build —
@@ -58,7 +59,7 @@ export default async function Home({
 }) {
   const message = voteMessage(await searchParams)
 
-  const [proposals, balance, runway, survival, revenueProps] = await Promise.all([
+  const [proposals, balance, runway, survival, revenueProps, revenueRecords] = await Promise.all([
     // HnScore is rendered inline below — no data dependency to await here.
     listProposals().catch(() => []),
     walletAddress ? getUsdcBalance(walletAddress).catch(() => null) : null,
@@ -67,7 +68,11 @@ export default async function Home({
     ).catch(() => null),
     getSurvivalInfo(emergencyThresholdDays).catch(() => null),
     listRevenueProposals().catch(() => []),
+    listProposalRevenue().catch(() => []),
   ])
+
+  // Attributed revenue per implemented revenue proposal.
+  const totalRevenue = totalAttributedRevenue(revenueRecords)
 
   const survivalActive = survival !== null && survival.active
 
@@ -246,6 +251,47 @@ export default async function Home({
           </div>
         )
       })()}
+
+      {totalRevenue > 0 && (
+        <div className="mb-8 border border-emerald-500/30 rounded-lg px-4 py-4 bg-emerald-950/10">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-[0.8rem] font-bold tracking-widest uppercase">
+              ▲ Revenue from implemented proposals
+            </h2>
+            <span className="text-[0.72rem] text-muted">
+              ${totalRevenue.toFixed(2)} USDC attributed total
+            </span>
+          </div>
+          <div className="space-y-1.5">
+            {revenueRecords.slice(0, 8).map((rec) => {
+              const title = proposals.find((p) => p.id === rec.proposalId)?.title
+              return (
+                <div
+                  key={rec.proposalId}
+                  className="text-sm flex items-center gap-3 border rounded px-3 py-2 border-muted/30"
+                >
+                  <span className="font-mono text-emerald-300 shrink-0">
+                    ${rec.amountUsdc.toFixed(2)}
+                  </span>
+                  {title ? (
+                    <span className="truncate">{title}</span>
+                  ) : (
+                    <span className="text-muted">Proposal #{rec.proposalId}</span>
+                  )}
+                  <span className="text-muted ml-auto text-[0.72rem]">
+                    #{rec.proposalId}
+                  </span>
+                </div>
+              )
+            })}
+            {revenueRecords.length > 8 && (
+              <p className="text-[0.72rem] text-muted mt-1">
+                +{revenueRecords.length - 8} more
+              </p>
+            )}
+          </div>
+        </div>
+      )}
 
       <p className="text-[1.35rem] font-bold leading-tight mb-2">
         The web is dead, <a className='hover:underline' href='#'>longlivethis.site</a>!
