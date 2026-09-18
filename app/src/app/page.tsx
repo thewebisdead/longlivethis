@@ -12,10 +12,12 @@ import { getMilestoneTimeline } from '@/lib/milestones'
 import { readLedger, summarize } from '@/lib/ledger'
 import type { MilestoneStats } from '@/lib/milestones'
 import { revalidateSnapshot } from '@/lib/snapshot'
+import { headers } from 'next/headers'
 import { runGuardedTrigger } from '@/lib/agentTrigger'
 import { listRevenueProposals, revenueSummary } from '@/lib/revenue'
 import { listProposalRevenue, totalAttributedRevenue } from '@/lib/revenueProposal'
 import { donateUri } from '@/lib/donation'
+import { recordPageView, getAnalytics, formatAnalytics } from '@/lib/analytics'
 
 // Config comes from app.env on the VPS at runtime, not from the build —
 // render on every request, with the data inline.
@@ -82,6 +84,19 @@ export default async function Home({
     ...p,
     priority: proposalPriorityLabel(p.text),
   }))
+
+  // Record this page view (fire-and-forget — never block rendering).
+  ;(async () => {
+    try {
+      const h = await headers()
+      const ip = h.get('x-forwarded-for')?.split(',')[0]?.trim()
+        ?? h.get('x-real-ip') ?? ''
+      await recordPageView(ip)
+    } catch { /* best effort */ }
+  })()
+
+  // Get analytics for display.
+  const analytics = await getAnalytics().catch(() => null)
 
   // Background tasks: fire and forget — never block the response on this.
   revalidateSnapshot()
@@ -350,6 +365,32 @@ export default async function Home({
 
       <ProposeForm emergencyActive={survivalActive} />
       <ProposalFeed proposals={annotatedProposals} emergencyActive={survivalActive} />
+
+      {analytics && analytics.pageViews > 0 && (() => {
+        const disp = formatAnalytics(analytics)
+        return (
+          <div className="mt-12 border-t border-muted/20 pt-6">
+            <div className="flex items-center gap-6 text-[0.78rem] text-muted flex-wrap">
+              <span>
+                <span className="font-semibold tabular-nums text-fg">{disp.pageViews}</span>{' '}
+                page view{analytics.pageViews !== 1 ? 's' : ''}
+              </span>
+              {analytics.totalVisitors > 0 && (
+                <span>
+                  <span className="font-semibold tabular-nums text-fg">{disp.totalVisitors}</span>{' '}
+                  unique visitor{analytics.totalVisitors !== 1 ? 's' : ''}{' '}
+                  <span className="text-[0.68rem]">({disp.visitorsToday} today)</span>
+                </span>
+              )}
+              {disp.lastPageView && (
+                <span className="text-[0.68rem]">
+                  last visit {disp.lastPageView}
+                </span>
+              )}
+            </div>
+          </div>
+        )
+      })()}
     </main>
   )
 }
