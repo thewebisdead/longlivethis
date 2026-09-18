@@ -30,8 +30,11 @@ import {
   recordSkippedRun,
   recordDownshiftedRun,
 } from './survival.ts'
+import { recordAgentActivity } from './agentActivity.ts'
+import { listProposals } from './github.ts'
 import type { SpendGuardDecision } from './spendGuard'
 import type { SurvivalLevel } from './survival'
+import type { AgentActivityEntry } from './agentActivity'
 
 // ─── Config ───────────────────────────────────────────────────────────────
 
@@ -197,6 +200,31 @@ function newRunId(): string {
 }
 
 /**
+ * Best-effort snapshot of the proposals on the board, for the public activity
+ * log. Falls back to an empty list if the feed is unavailable — the activity
+ * record is opinion data, never life support.
+ */
+async function boardProposals(): Promise<string[]> {
+  try {
+    const proposals = await listProposals()
+    // Display titles only (the issue title line) — the feed's full text list
+    // would bloat the log and expose nothing more than the public board already
+    // shows. Title is the single-line summary, so use that.
+    return proposals.slice(0, 20).map((p) => p.title)
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Append a structured entry to the public activity log. Best-effort: a
+ * failure here must never break the triggering path, which is life support.
+ */
+function logActivity(entry: AgentActivityEntry): void {
+  recordAgentActivity(entry).catch(() => null)
+}
+
+/**
  * Run the guarded trigger pipeline: read runway, consult the spend guard,
  * respect the cadence, and dispatch agent.yml only when the guard allows.
  *
@@ -248,6 +276,23 @@ export async function runGuardedTrigger(
 
   const decision = decideRun(runway)
 
+  // Snapshot the candidate proposals once so every terminal branch below can
+  // record which proposals the agent was considering. Best-effort.
+  const proposals = await boardProposals()
+  const logBase = (): AgentActivityEntry => ({
+    ts: now,
+    mode: decision.mode,
+    reason: decision.reason,
+    level: runway.level,
+    runwayDays: runway.runwayDays,
+    survivalLevel,
+    throttled,
+    dispatched: false,
+    runId: null,
+    error: null,
+    proposals,
+  })
+
   // Record the attempt (even when throttled — we still evaluated runway).
   const nextState: TriggerState = {
     ...state,
@@ -270,6 +315,7 @@ export async function runGuardedTrigger(
 
   if (throttled) {
     await writeTriggerState(nextState)
+    logActivity(logBase())
     return result
   }
 
@@ -279,6 +325,7 @@ export async function runGuardedTrigger(
       await recordSkippedRun().catch(() => null)
     }
     await writeTriggerState(nextState)
+    logActivity(logBase())
     return result
   }
 
@@ -294,6 +341,7 @@ export async function runGuardedTrigger(
   if (!target) {
     result.error = 'GitHub credentials not configured — cannot dispatch agent.yml'
     await writeTriggerState(nextState)
+    logActivity({ ...logBase(), error: result.error })
     return result
   }
 
@@ -318,6 +366,7 @@ export async function runGuardedTrigger(
   nextState.lastDispatchTs = result.dispatched ? now : nextState.lastDispatchTs
   nextState.lastRunId = result.dispatched ? runId : nextState.lastRunId
   await writeTriggerState(nextState)
+  logActivity({ ...logBase(), dispatched: result.dispatched, runId: result.runId, error: result.error })
   return result
 }
 

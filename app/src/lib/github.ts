@@ -226,6 +226,91 @@ export async function refreshProposal(issue: number): Promise<void> {
   }
 }
 
+// ─── Agent activity (PRs + CI) ────────────────────────────────────────────
+//
+// Public-read helpers the /agent activity page uses to show what the agent has
+// shipped: its pull requests and the CI/deploy workflow runs behind them. These
+// are read-only repository queries authenticated with the same credential the
+// app already uses (the proposals app token / PAT), and are fully public data
+// for a public repo. Each is best-effort: a GitHub failure yields an empty
+// list rather than a page error.
+
+export interface AgentPullRequest {
+  number: number
+  title: string
+  html_url: string
+  state: string
+  merged: boolean
+  createdAt: string
+  mergedAt: string | null
+}
+
+/** Recent PRs in this repo (oldest→newest is fine; page reverses). */
+export async function listAgentPullRequests(perPage = 30): Promise<AgentPullRequest[]> {
+  if (!github.repo) return []
+  try {
+    const res = await gh(`/repos/${github.repo}/pulls?state=all&sort=created&direction=desc&per_page=${perPage}`)
+    if (!res.ok) return []
+    const raw = (await res.json()) as {
+      number: number
+      title: string
+      html_url: string
+      state: string
+      merged_at: string | null
+      created_at: string
+    }[]
+    return raw.map((pr) => ({
+      number: pr.number,
+      title: pr.title,
+      html_url: pr.html_url,
+      state: pr.state,
+      merged: pr.state === 'closed' && Boolean(pr.merged_at),
+      createdAt: pr.created_at,
+      mergedAt: pr.merged_at,
+    }))
+  } catch {
+    return []
+  }
+}
+
+export interface WorkflowRun {
+  id: number
+  name: string
+  headBranch: string
+  status: string
+  conclusion: string | null
+  createdAt: string
+}
+
+/** Recent CI/deploy workflow runs in this repo. */
+export async function listAgentWorkflowRuns(perPage = 30): Promise<WorkflowRun[]> {
+  if (!github.repo) return []
+  try {
+    const res = await gh(`/repos/${github.repo}/actions/runs?per_page=${perPage}`)
+    if (!res.ok) return []
+    const raw = (await res.json()) as {
+      workflow_runs: {
+        id: number
+        name: string
+        head_branch: string | null
+        status: string
+        conclusion: string | null
+        created_at: string
+      }[]
+    }
+    return (raw.workflow_runs ?? []).map((run) => ({
+      id: run.id,
+      name: run.name,
+      headBranch: run.head_branch ?? '',
+      status: run.status,
+      conclusion: run.conclusion,
+      createdAt: run.created_at,
+    }))
+  } catch {
+    return []
+  }
+}
+
 export async function createProposal(text: string): Promise<Proposal> {
   const res = await gh(`/repos/${github.repo}/issues`, {
     method: 'POST',
