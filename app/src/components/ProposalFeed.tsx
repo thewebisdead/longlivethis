@@ -1,10 +1,41 @@
 import { repoUrl } from '@/lib/config'
 import type { Proposal } from '@/lib/types'
+import { hasEconomics } from '@/lib/github'
+import type { ActualEconomics } from '@/lib/economics'
 
 // A proposal with an emergency-priority classification attached (used by the
 // feed to surface cost-saving / revenue proposals during emergency mode).
 export interface RankedProposal extends Proposal {
   priority: 'cost-saving' | 'revenue' | 'standard'
+}
+
+// Render an estimate-vs-actual comparison for a single economics figure.
+function CompareRow({ label, estimate, actual }: { label: string; estimate: number; actual: number | null }) {
+  if (actual === null) {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-[0.65rem] text-muted">
+        <span>{label}</span>
+        <span className="font-mono tabular-nums">${estimate.toFixed(0)} est</span>
+      </span>
+    )
+  }
+  const diff = actual - estimate
+  const good = diff <= 0 // actual at or under the estimate is better (cost bound)
+  return (
+    <span className="inline-flex items-center gap-1.5 text-[0.65rem]">
+      <span className="text-muted">{label}</span>
+      <span
+        className={`font-mono tabular-nums ${
+          good ? 'text-emerald-300' : 'text-red-300'
+        }`}
+      >
+        ${actual.toFixed(0)} actual
+      </span>
+      <span className={`font-mono tabular-nums ${good ? 'text-emerald-400/70' : 'text-red-400/70'}`}>
+        (${estimate.toFixed(0)} est)
+      </span>
+    </span>
+  )
 }
 
 // How many proposals the page renders. The board can legitimately hold more
@@ -54,11 +85,15 @@ function VoteButton({ issue, dir }: { issue: number; dir: 'up' | 'down' }) {
 export default function ProposalFeed({
   proposals,
   emergencyActive = false,
+  actualEconomics = [],
 }: {
   proposals: RankedProposal[]
   emergencyActive?: boolean
+  /** Recorded actual outcomes for implemented proposals, keyed by issue no. */
+  actualEconomics?: ActualEconomics[]
 }) {
   const ranked = sortProposals(proposals)
+  const actualByProposal = new Map(actualEconomics.map((a) => [a.proposalId, a]))
 
   // In emergency mode, cost-saving and revenue proposals are surfaced first.
   // The sort still respects votes so the community voice is not drowned;
@@ -88,9 +123,14 @@ export default function ProposalFeed({
           Nothing to implement yet :( Propose something!
         </p>
       ) : (
-        rows.map((p) => (
+        rows.map((p) => {
+          const econ = p.economics
+          const hasEcon = hasEconomics(econ)
+          const actual = actualByProposal.get(p.id) ?? null
+          const showActual = econ.estimatedCostUsdc !== null && actual?.actualCostUsdc != null
           // The anchor id is where the vote callback redirects back to, so a
           // voter returns to the proposal they just voted on.
+          return (
           <div
             key={p.id}
             id={`p${p.id}`}
@@ -140,6 +180,67 @@ export default function ProposalFeed({
                   </span>
                 )}
               </span>
+              {hasEcon && (
+                <span className="flex gap-3 flex-wrap mt-1 text-[0.68rem]">
+                  {econ.estimatedCostUsdc !== null &&
+                    (showActual ? (
+                      <CompareRow
+                        label="cost"
+                        estimate={econ.estimatedCostUsdc}
+                        actual={actual?.actualCostUsdc ?? null}
+                      />
+                    ) : (
+                      <span className="inline-flex items-center gap-1 text-muted">
+                        <span>cost</span>
+                        <span className="font-mono tabular-nums">${econ.estimatedCostUsdc.toFixed(0)} est</span>
+                      </span>
+                    ))}
+                  {econ.recurringCostUsdc !== null &&
+                    (actual?.actualRecurringCostUsdc != null ? (
+                      <CompareRow
+                        label="recurring"
+                        estimate={econ.recurringCostUsdc}
+                        actual={actual.actualRecurringCostUsdc}
+                      />
+                    ) : (
+                      <span className="inline-flex items-center gap-1 text-muted">
+                        <span>recurring</span>
+                        <span className="font-mono tabular-nums">${econ.recurringCostUsdc.toFixed(0)} est</span>
+                      </span>
+                    ))}
+                  {econ.expectedBenefitUsdc !== null &&
+                    (actual?.actualBenefitUsdc != null ? (
+                      <span className="inline-flex items-center gap-1.5 text-[0.65rem]">
+                        <span className="text-muted">{econ.benefitKind === 'savings' ? 'saves' : 'earns'}</span>
+                        <span
+                          className={`font-mono tabular-nums ${
+                            actual.actualBenefitUsdc >= econ.expectedBenefitUsdc
+                              ? 'text-emerald-300'
+                              : 'text-red-300'
+                          }`}
+                        >
+                          ${actual.actualBenefitUsdc.toFixed(0)} actual
+                        </span>
+                        <span className="font-mono tabular-nums text-muted">
+                          (${econ.expectedBenefitUsdc.toFixed(0)} est)
+                        </span>
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 text-muted">
+                        <span>{econ.benefitKind === 'savings' ? 'saves' : 'earns'}</span>
+                        <span className="font-mono tabular-nums">${econ.expectedBenefitUsdc.toFixed(0)}est</span>
+                      </span>
+                    ))}
+                  {econ.runwayImpactDays !== null && econ.runwayImpactDays !== 0 && (
+                    <span className="inline-flex items-center gap-1 text-muted">
+                      <span>runway</span>
+                      <span className="font-mono tabular-nums">
+                        {econ.runwayImpactDays > 0 ? '+' : ''}{econ.runwayImpactDays}d
+                      </span>
+                    </span>
+                  )}
+                </span>
+              )}
             </a>
             {/* Share card for this proposal — every link post is distribution.
                 A tiny glyph opens /api/og?proposal=N, the dynamic card with
@@ -154,8 +255,8 @@ export default function ProposalFeed({
               🔗
             </a>
           </div>
-        ))
-      )}
+        )
+        }))}
       {hidden > 0 && (
         <p className="text-[0.72rem] text-muted mt-4">
           {hidden} lower-ranked {hidden === 1 ? 'proposal is' : 'proposals are'} not shown.{' '}
