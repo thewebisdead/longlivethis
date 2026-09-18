@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 // .ts extension: `node --test` runs this file directly (type stripping).
-import { mapIssue, normalizeText, issueTitle, type GhIssue } from './github.ts'
+import { mapIssue, normalizeText, issueTitle, extractCategory, embedCategory, type GhIssue } from './github.ts'
 
 const base: GhIssue = {
   number: 7,
@@ -20,6 +20,7 @@ test('mapIssue maps an open issue to a proposal', () => {
     votes: 4,
     url: 'https://github.com/o/r/issues/7',
     created_at: '2026-07-16T00:00:00Z',
+    category: 'standard',
   })
 })
 
@@ -30,6 +31,32 @@ test('mapIssue falls back to the title when the body is empty', () => {
 
 test('mapIssue defaults votes to 0 when reactions are missing', () => {
   assert.equal(mapIssue({ ...base, reactions: undefined }).votes, 0)
+})
+
+test('extractCategory reads the embedded category from the body', () => {
+  assert.equal(extractCategory('<!-- category: revenue -->\n\nSell API access'), 'revenue')
+  assert.equal(extractCategory('<!-- category: feature -->\n\nAdd dark mode'), 'feature')
+  assert.equal(extractCategory('<!-- category: cost-saving -->\n\nCut spend'), 'cost-saving')
+  assert.equal(extractCategory('<!-- category: bogus -->\n\nNope'), 'standard')
+  assert.equal(extractCategory('no category here'), 'standard')
+  assert.equal(extractCategory(null), 'standard')
+})
+
+test('mapIssue surfaces a revenue category from the embedded comment', () => {
+  const p = mapIssue({
+    ...base,
+    body: '<!-- category: revenue -->\n\nGenerate revenue by selling API keys.',
+  })
+  assert.equal(p.category, 'revenue')
+  assert.equal(p.text, '<!-- category: revenue -->\n\nGenerate revenue by selling API keys.')
+})
+
+test('embedCategory prepends the category comment to a body', () => {
+  const embedded = embedCategory('Sell API access', 'revenue')
+  assert.ok(embedded.startsWith('<!-- category: revenue -->'))
+  assert.ok(embedded.includes('Sell API access'))
+  // Round-trips back to the same category.
+  assert.equal(extractCategory(embedded), 'revenue')
 })
 
 test('mapIssue counts only 👍 and 👎, ignoring other emojis', () => {

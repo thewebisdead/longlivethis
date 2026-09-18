@@ -112,17 +112,34 @@ export default function ProposalFeed({
               <span className="block text-[1rem] leading-normal group-hover:underline">
                 {p.title} <span className="text-muted">#{p.id}</span>
               </span>
-              {emergencyActive && p.priority !== 'standard' && (
-                <span
-                  className={`mt-1 inline-block text-[0.65rem] font-bold uppercase tracking-wider px-2 py-0.5 rounded ${
-                    p.priority === 'cost-saving'
-                      ? 'bg-amber-900/40 text-amber-300 border border-amber-500/40'
-                      : 'bg-emerald-900/40 text-emerald-300 border border-emerald-500/40'
-                  }`}
-                >
-                  {p.priority === 'cost-saving' ? '▼ cost-saving' : '▲ revenue'}
-                </span>
-              )}
+              <span className="flex gap-2 flex-wrap mt-1">
+                {p.category === 'revenue' && (
+                  <span className="inline-block text-[0.65rem] font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-emerald-900/40 text-emerald-300 border border-emerald-500/40">
+                    ▲ revenue
+                  </span>
+                )}
+                {p.category === 'feature' && (
+                  <span className="inline-block text-[0.65rem] font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-blue-900/40 text-blue-300 border border-blue-500/40">
+                    ✦ feature
+                  </span>
+                )}
+                {p.category === 'cost-saving' && (
+                  <span className="inline-block text-[0.65rem] font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-amber-900/40 text-amber-300 border border-amber-500/40">
+                    ▼ cost-saving
+                  </span>
+                )}
+                {emergencyActive && p.priority !== 'standard' && (
+                  <span
+                    className={`inline-block text-[0.65rem] font-bold uppercase tracking-wider px-2 py-0.5 rounded ${
+                      p.priority === 'cost-saving'
+                        ? 'bg-amber-900/40 text-amber-300 border border-amber-500/40'
+                        : 'bg-emerald-900/40 text-emerald-300 border border-emerald-500/40'
+                    }`}
+                  >
+                    {(p.priority === 'cost-saving' ? '▼ cost-saving' : '▲ revenue') + ' priority'}
+                  </span>
+                )}
+              </span>
             </a>
             {/* Share card for this proposal — every link post is distribution.
                 A tiny glyph opens /api/og?proposal=N, the dynamic card with

@@ -1,7 +1,7 @@
 import { createSign } from 'crypto'
 import { github, githubAppConfigured } from './config.ts'
 import { defineCache } from './cache.ts'
-import type { Proposal } from './types'
+import type { Proposal, ProposalCategory } from './types'
 
 // Proposals live in GitHub Issues — there is no database. The app creates an
 // issue per proposal as the PROPOSALS GitHub App (installed on this repo only,
@@ -66,17 +66,41 @@ export interface GhIssue {
   reactions?: { '+1'?: number; '-1'?: number }
 }
 
+/**
+ * Category embedded as an HTML comment in the issue body so it survives
+ * round-trips through GitHub Issues without needing labels (which the
+ * proposals app might not have permission to set).
+ * Format on the first line of the body: <!-- category: revenue -->
+ */
+export function extractCategory(body: string | null | undefined): ProposalCategory {
+  if (!body) return 'standard'
+  const match = body.match(/<!--\s*category:\s*(\S+)\s*-->/)
+  if (match) {
+    const cat = match[1]
+    if (cat === 'feature' || cat === 'revenue' || cat === 'cost-saving') return cat
+  }
+  return 'standard'
+}
+
+export function embedCategory(body: string, category: ProposalCategory): string {
+  const tag = `<!-- category: ${category} -->`
+  // Prepend to the body so it's always the first thing, easy to extract.
+  return `${tag}\n\n${body}`
+}
+
 /** Issue → Proposal. Pure — unit-tested without network. */
 export function mapIssue(issue: GhIssue): Proposal {
   // Net votes: 👍 minus 👎; every other emoji is ignored.
   const r = issue.reactions
+  const body = issue.body?.trim() || issue.title
   return {
     id: issue.number,
     title: issue.title,
-    text: issue.body?.trim() || issue.title,
+    text: body,
     votes: (r?.['+1'] ?? 0) - (r?.['-1'] ?? 0),
     url: issue.html_url,
     created_at: issue.created_at,
+    category: extractCategory(issue.body),
   }
 }
 
@@ -311,10 +335,12 @@ export async function listAgentWorkflowRuns(perPage = 30): Promise<WorkflowRun[]
   }
 }
 
-export async function createProposal(text: string): Promise<Proposal> {
+export async function createProposal(text: string, category?: ProposalCategory): Promise<Proposal> {
+  const cat = category && ['feature', 'revenue', 'cost-saving'].includes(category) ? category : 'standard'
+  const body = cat !== 'standard' ? embedCategory(text, cat) : text
   const res = await gh(`/repos/${github.repo}/issues`, {
     method: 'POST',
-    body: JSON.stringify({ title: issueTitle(text), body: text }),
+    body: JSON.stringify({ title: issueTitle(text), body }),
   })
   if (!res.ok) {
     const detail = ((await res.json().catch(() => null)) as { message?: string } | null)?.message

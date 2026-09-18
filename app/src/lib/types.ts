@@ -1,3 +1,5 @@
+export type ProposalCategory = 'feature' | 'revenue' | 'cost-saving' | 'standard'
+
 export interface Proposal {
   /** GitHub issue number */
   id: number
@@ -10,4 +12,6 @@ export interface Proposal {
   /** GitHub issue URL — where voting (reacting) happens */
   url: string
   created_at: string
+  /** Proposal category: feature, revenue, cost-saving, or standard (auto-detected). */
+  category: ProposalCategory
 }
