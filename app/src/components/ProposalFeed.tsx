@@ -1,5 +1,5 @@
 import { repoUrl } from '@/lib/config'
-import type { Proposal } from '@/lib/types'
+import type { Proposal, ProposalEconomics } from '@/lib/types'
 import { hasEconomics } from '@/lib/github'
 import type { ActualEconomics } from '@/lib/economics'
 
@@ -34,6 +34,38 @@ function CompareRow({ label, estimate, actual }: { label: string; estimate: numb
       <span className={`font-mono tabular-nums ${good ? 'text-emerald-400/70' : 'text-red-400/70'}`}>
         (${estimate.toFixed(0)} est)
       </span>
+    </span>
+  )
+}
+
+// A prominent cost estimate shown for every proposal that carries one, so a
+// voter sees what a proposal spends out of the treasury BEFORE they vote on it.
+// Rendered as a compact two-line block (one-time cost, then recurring cost)
+// that sits right beside the vote control rather than as a footnote under the
+// title — the whole point is that the cost is visible up front, while deciding.
+function CostEstimate({ economics }: { economics: ProposalEconomics }) {
+  const { estimatedCostUsdc, recurringCostUsdc } = economics
+  const haveCost = estimatedCostUsdc !== null
+  const haveRecurring = recurringCostUsdc !== null
+
+  return (
+    <span
+      className="flex flex-col items-center gap-0.5 shrink-0"
+      title="Estimated treasury cost. One-time implementation cost, then recurring cost per funding cycle."
+    >
+      <span className="text-[0.55rem] uppercase tracking-wider text-muted">cost</span>
+      <span className="font-mono tabular-nums text-[0.8rem] leading-none whitespace-nowrap">
+        ${(estimatedCostUsdc ?? 0).toFixed(0)}
+      </span>
+      {haveRecurring ? (
+        <span className="font-mono tabular-nums text-[0.6rem] leading-none text-muted whitespace-nowrap">
+          +${(recurringCostUsdc ?? 0).toFixed(0)}/cycle
+        </span>
+      ) : haveCost ? (
+        <span className="font-mono tabular-nums text-[0.6rem] leading-none text-muted">
+          one-time
+        </span>
+      ) : null}
     </span>
   )
 }
@@ -115,7 +147,7 @@ export default function ProposalFeed({
       <h2 className="text-[0.8rem] tracking-widest text-muted uppercase mt-8 mb-4">Proposals</h2>
       {rows.length > 0 && (
         <p className="text-[0.72rem] text-muted mb-4">
-          Vote with ▲ / ▼ (automatic sign in with GitHub) or vote on github with 👍/👎. [There might be a small delay in the vote showing here due to caching]
+          Vote with ▲ / ▼ (automatic sign in with GitHub) or vote on github with 👍/👎. Each row shows the estimated treasury cost next to the vote — a one-time implementation cost and a per-cycle recurring cost where the proposer provided one. [There might be a small delay in the vote showing here due to caching]
         </p>
       )}
       {rows.length === 0 ? (
@@ -143,6 +175,12 @@ export default function ProposalFeed({
               </span>
               <VoteButton issue={p.id} dir="down" />
             </span>
+            {/* Estimated treasury cost, shown up front so voters know what they
+                are spending before they vote. Omitted when the proposal carries
+                no cost estimate. */}
+            {econ.estimatedCostUsdc !== null && (
+              <CostEstimate economics={econ} />
+            )}
             <a
               href={p.url}
               target="_blank"
@@ -182,32 +220,24 @@ export default function ProposalFeed({
               </span>
               {hasEcon && (
                 <span className="flex gap-3 flex-wrap mt-1 text-[0.68rem]">
-                  {econ.estimatedCostUsdc !== null &&
-                    (showActual ? (
-                      <CompareRow
-                        label="cost"
-                        estimate={econ.estimatedCostUsdc}
-                        actual={actual?.actualCostUsdc ?? null}
-                      />
-                    ) : (
-                      <span className="inline-flex items-center gap-1 text-muted">
-                        <span>cost</span>
-                        <span className="font-mono tabular-nums">${econ.estimatedCostUsdc.toFixed(0)} est</span>
-                      </span>
-                    ))}
-                  {econ.recurringCostUsdc !== null &&
-                    (actual?.actualRecurringCostUsdc != null ? (
-                      <CompareRow
-                        label="recurring"
-                        estimate={econ.recurringCostUsdc}
-                        actual={actual.actualRecurringCostUsdc}
-                      />
-                    ) : (
-                      <span className="inline-flex items-center gap-1 text-muted">
-                        <span>recurring</span>
-                        <span className="font-mono tabular-nums">${econ.recurringCostUsdc.toFixed(0)} est</span>
-                      </span>
-                    ))}
+                  {/* The estimated one-time + recurring cost is already shown
+                      prominently by the CostEstimate badge beside the vote
+                      control. This line only appears once an actual outcome is
+                      recorded, comparing it against the estimate. */}
+                  {econ.estimatedCostUsdc !== null && showActual && (
+                    <CompareRow
+                      label="cost"
+                      estimate={econ.estimatedCostUsdc}
+                      actual={actual?.actualCostUsdc ?? null}
+                    />
+                  )}
+                  {econ.recurringCostUsdc !== null && actual?.actualRecurringCostUsdc != null && (
+                    <CompareRow
+                      label="recurring"
+                      estimate={econ.recurringCostUsdc}
+                      actual={actual.actualRecurringCostUsdc}
+                    />
+                  )}
                   {econ.expectedBenefitUsdc !== null &&
                     (actual?.actualBenefitUsdc != null ? (
                       <span className="inline-flex items-center gap-1.5 text-[0.65rem]">
