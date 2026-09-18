@@ -289,6 +289,12 @@ export default async function Home({
             >
               Milestones
             </a>
+            <a
+              href="/agent"
+              className="text-muted underline underline-offset-2 hover:text-fg"
+            >
+              Agent
+            </a>
           </>
         )}
         <HnScore />
