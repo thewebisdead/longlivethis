@@ -6,7 +6,8 @@ import {
   PROPOSAL_HARD_CAP,
 } from '@/lib/github'
 import { recordPriorityProposal } from '@/lib/survival'
-import type { ProposalCategory } from '@/lib/types'
+import type { ProposalCategory, ProposalEconomics } from '@/lib/types'
+import { EMPTY_ECONOMICS } from '@/lib/types'
 
 export const dynamic = 'force-dynamic'
 
@@ -26,12 +27,31 @@ export async function POST(req: Request) {
   // on a non-string `text` throw straight out of the handler as an opaque 500.
   let trimmed: string
   let category: ProposalCategory = 'standard'
+  let economics: ProposalEconomics = { ...EMPTY_ECONOMICS }
   try {
-    const body = (await req.json()) as { text?: unknown; category?: unknown }
+    const body = (await req.json()) as {
+      text?: unknown
+      category?: unknown
+      economics?: unknown
+    }
     trimmed = typeof body.text === 'string' ? body.text.trim() : ''
     const cat = body.category
     if (cat === 'feature' || cat === 'revenue' || cat === 'cost-saving') {
       category = cat
+    }
+    const ec = body.economics
+    if (ec && typeof ec === 'object') {
+      const e = ec as Record<string, unknown>
+      const num = (v: unknown): number | null =>
+        typeof v === 'number' && Number.isFinite(v) ? v :
+        typeof v === 'string' && v.trim() !== '' && Number.isFinite(Number(v)) ? Number(v) : null
+      economics = {
+        estimatedCostUsdc: num(e.estimatedCostUsdc),
+        recurringCostUsdc: num(e.recurringCostUsdc),
+        expectedBenefitUsdc: num(e.expectedBenefitUsdc),
+        benefitKind: e.benefitKind === 'revenue' || e.benefitKind === 'savings' ? e.benefitKind : null,
+        runwayImpactDays: num(e.runwayImpactDays),
+      }
     }
   } catch {
     return NextResponse.json({ error: 'invalid JSON body' }, { status: 400 })
@@ -65,7 +85,7 @@ export async function POST(req: Request) {
     if (open.some((p) => normalizeText(stripCategory(p.text)) === normalized)) {
       return NextResponse.json({ error: 'an identical proposal is already open' }, { status: 409 })
     }
-    const proposal = await createProposal(trimmed, category)
+    const proposal = await createProposal(trimmed, category, economics)
     // If this proposal reduces costs or generates revenue, record it for
     // emergency-mode priority tracking (safe to ignore failures).
     recordPriorityProposal(trimmed).catch(() => null)

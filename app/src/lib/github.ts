@@ -1,7 +1,8 @@
 import { createSign } from 'crypto'
 import { github, githubAppConfigured } from './config.ts'
 import { defineCache } from './cache.ts'
-import type { Proposal, ProposalCategory } from './types'
+import type { Proposal, ProposalCategory, ProposalEconomics } from './types.ts'
+import { EMPTY_ECONOMICS } from './types.ts'
 
 // Proposals live in GitHub Issues — there is no database. The app creates an
 // issue per proposal as the PROPOSALS GitHub App (installed on this repo only,
@@ -88,6 +89,77 @@ export function embedCategory(body: string, category: ProposalCategory): string 
   return `${tag}\n\n${body}`
 }
 
+// ─── Economics metadata ───────────────────────────────────────────────────
+//
+// A proposal's economic estimate is stored the same way its category is: as an
+// HTML comment in the issue body, so it survives round-trips through GitHub
+// Issues without needing labels or a sidecar DB. Each figure lives on its own
+// comment line so they can be added, removed or edited independently. Values
+// are plain numbers (USDC / days). Absent comments mean "not estimated".
+//
+//   <!-- ec-required: false -->          (reserved; proposals may omit all)
+//   <!-- ec-cost: 12.5 -->
+//   <!-- ec-recurring: 2 -->
+//   <!-- ec-benefit: 30 -->
+//   <!-- ec-kind: revenue -->
+//   <!-- ec-runway: 14 -->
+
+const EC_TAGS: { key: keyof ProposalEconomics; tag: string }[] = [
+  { key: 'estimatedCostUsdc', tag: 'ec-cost' },
+  { key: 'recurringCostUsdc', tag: 'ec-recurring' },
+  { key: 'expectedBenefitUsdc', tag: 'ec-benefit' },
+  { key: 'benefitKind', tag: 'ec-kind' },
+  { key: 'runwayImpactDays', tag: 'ec-runway' },
+]
+
+function economicsComment(economics: ProposalEconomics): string {
+  return EC_TAGS.map(({ key, tag }) => {
+    const value = economics[key]
+    if (value === null || value === undefined) return null
+    return `<!-- ${tag}: ${value} -->`
+  })
+    .filter((c): c is string => c !== null)
+    .join('\n')
+}
+
+/**
+ * Read the economic estimate out of an issue body. Pure — unit-tested.
+ * Absent or malformed comments fall back to EMPTY_ECONOMICS.
+ */
+export function extractEconomics(body: string | null | undefined): ProposalEconomics {
+  if (!body) return { ...EMPTY_ECONOMICS }
+  const out: ProposalEconomics = { ...EMPTY_ECONOMICS }
+  for (const { key, tag } of EC_TAGS) {
+    const m = body.match(new RegExp(`<!--\\s*${tag}\\s*:\\s*([^\\s]*)`, 'i'))
+    if (!m) continue
+    const raw = m[1]
+    if (key === 'benefitKind') {
+      if (raw === 'revenue' || raw === 'savings') out.benefitKind = raw
+      continue
+    }
+    const num = Number(raw)
+    if (Number.isFinite(num)) out[key] = num
+  }
+  return out
+}
+
+/** Whether any economic field is set (has a real estimate to show). */
+export function hasEconomics(e: ProposalEconomics): boolean {
+  return (
+    e.estimatedCostUsdc !== null ||
+    e.recurringCostUsdc !== null ||
+    e.expectedBenefitUsdc !== null ||
+    e.runwayImpactDays !== null
+  )
+}
+
+/** Append economics comments to a body (keeps the body readable at the top). */
+export function embedEconomics(body: string, economics: ProposalEconomics): string {
+  const comment = economicsComment(economics)
+  if (!comment) return body
+  return `${body}\n\n${comment}`
+}
+
 /** Issue → Proposal. Pure — unit-tested without network. */
 export function mapIssue(issue: GhIssue): Proposal {
   // Net votes: 👍 minus 👎; every other emoji is ignored.
@@ -101,6 +173,7 @@ export function mapIssue(issue: GhIssue): Proposal {
     url: issue.html_url,
     created_at: issue.created_at,
     category: extractCategory(issue.body),
+    economics: extractEconomics(issue.body),
   }
 }
 
@@ -335,9 +408,14 @@ export async function listAgentWorkflowRuns(perPage = 30): Promise<WorkflowRun[]
   }
 }
 
-export async function createProposal(text: string, category?: ProposalCategory): Promise<Proposal> {
+export async function createProposal(
+  text: string,
+  category?: ProposalCategory,
+  economics?: ProposalEconomics,
+): Promise<Proposal> {
   const cat = category && ['feature', 'revenue', 'cost-saving'].includes(category) ? category : 'standard'
-  const body = cat !== 'standard' ? embedCategory(text, cat) : text
+  let body = cat !== 'standard' ? embedCategory(text, cat) : text
+  if (economics) body = embedEconomics(body, economics)
   const res = await gh(`/repos/${github.repo}/issues`, {
     method: 'POST',
     body: JSON.stringify({ title: issueTitle(text), body }),

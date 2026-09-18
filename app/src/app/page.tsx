@@ -16,6 +16,7 @@ import { headers } from 'next/headers'
 import { runGuardedTrigger } from '@/lib/agentTrigger'
 import { listRevenueProposals, revenueSummary } from '@/lib/revenue'
 import { listProposalRevenue, totalAttributedRevenue } from '@/lib/revenueProposal'
+import { listActualEconomics } from '@/lib/economics'
 import { donateUri } from '@/lib/donation'
 import { recordPageView, getAnalytics, formatAnalytics } from '@/lib/analytics'
 
@@ -61,7 +62,7 @@ export default async function Home({
 }) {
   const message = voteMessage(await searchParams)
 
-  const [proposals, balance, runway, survival, revenueProps, revenueRecords] = await Promise.all([
+  const [proposals, balance, runway, survival, revenueProps, revenueRecords, actualEconomics] = await Promise.all([
     // HnScore is rendered inline below — no data dependency to await here.
     listProposals().catch(() => []),
     walletAddress ? getUsdcBalance(walletAddress).catch(() => null) : null,
@@ -71,6 +72,7 @@ export default async function Home({
     getSurvivalInfo(emergencyThresholdDays).catch(() => null),
     listRevenueProposals().catch(() => []),
     listProposalRevenue().catch(() => []),
+    listActualEconomics().catch(() => []),
   ])
 
   // Attributed revenue per implemented revenue proposal.
@@ -364,7 +366,11 @@ export default async function Home({
       {message && <VoteNotice message={message} />}
 
       <ProposeForm emergencyActive={survivalActive} />
-      <ProposalFeed proposals={annotatedProposals} emergencyActive={survivalActive} />
+      <ProposalFeed
+        proposals={annotatedProposals}
+        emergencyActive={survivalActive}
+        actualEconomics={actualEconomics}
+      />
 
       {analytics && analytics.pageViews > 0 && (() => {
         const disp = formatAnalytics(analytics)
