@@ -21,6 +21,7 @@ import { listActualEconomics } from '@/lib/economics'
 import { donateUri } from '@/lib/donation'
 import { recordPageView, getAnalytics, formatAnalytics } from '@/lib/analytics'
 import { getSuggestions } from '@/lib/proposalSuggester'
+import { listTierClaims, recognitionStrip } from '@/lib/donationTiers'
 
 // Config comes from app.env on the VPS at runtime, not from the build —
 // render on every request, with the data inline.
@@ -76,6 +77,10 @@ export default async function Home({
     listProposalRevenue().catch(() => []),
     listActualEconomics().catch(() => []),
   ])
+
+  // Donation tier claims — best-effort: a failure hides the strip, never the page.
+  const tierClaims = await listTierClaims().catch(() => [])
+  const tierStrip = recognitionStrip(tierClaims)
 
   // Auto-suggested proposals — the app drafts ideas itself and offers them for
   // adoption. Best-effort: a failure here hides the panel, never the page.
@@ -209,7 +214,83 @@ export default async function Home({
         </div>
       )}
 
+      {/* ── Donation reward tiers — recognition strip ── */}
+      {tierClaims.length > 0 && (() => {
+        const hasRecognition = tierStrip.founders.length > 0 || tierStrip.sponsors.length > 0 || tierStrip.badges.length > 0
+        if (!hasRecognition) return null
+        return (
+          <div className="mb-8">
+            {/* Founders — permanent top billing */}
+            {tierStrip.founders.length > 0 && (
+              <div className="border border-emerald-500/30 rounded-lg px-4 py-3 bg-emerald-950/10 mb-2">
+                <h3 className="text-[0.65rem] font-bold tracking-widest uppercase text-muted mb-2">
+                  ✦ Founding supporters
+                </h3>
+                <div className="flex flex-wrap gap-2">
+                  {tierStrip.founders.map((c, i) => (
+                    <span
+                      key={`founder-${i}`}
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[0.78rem] font-semibold border border-emerald-500/40 bg-emerald-900/20 text-emerald-200 rounded-sm"
+                    >
+                      <svg viewBox="0 0 24 24" fill="currentColor" className="w-3 h-3" aria-hidden="true">
+                        <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
+                      </svg>
+                      {c.name}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Sponsors — named slots */}
+            {tierStrip.sponsors.length > 0 && (
+              <div className="border border-amber-500/30 rounded-lg px-4 py-3 bg-amber-950/10 mb-2">
+                <h3 className="text-[0.65rem] font-bold tracking-widest uppercase text-muted mb-2">
+                  ☰ Supported by
+                </h3>
+                <div className="flex flex-wrap gap-2">
+                  {tierStrip.sponsors.map((c, i) => (
+                    <span
+                      key={`sponsor-${i}`}
+                      className="inline-flex items-center gap-1 px-2 py-1 text-[0.75rem] border border-amber-500/30 bg-amber-900/15 text-amber-200 rounded-sm"
+                    >
+                      {c.name}
+                      {c.address && (
+                        <span className="text-[0.6rem] text-muted font-mono">
+                          {c.address.slice(0, 6)}…{c.address.slice(-4)}
+                        </span>
+                      )}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Badges & thanks — small marks */}
+            {tierStrip.badges.length > 0 && (
+              <div className="border border-muted/30 rounded-lg px-4 py-3 bg-muted/5">
+                <h3 className="text-[0.65rem] font-bold tracking-widest uppercase text-muted mb-2">
+                  ● Supporters
+                </h3>
+                <div className="flex flex-wrap gap-1.5">
+                  {tierStrip.badges.map((c, i) => (
+                    <span
+                      key={`badge-${i}`}
+                      className="inline-flex items-center gap-1 px-2 py-0.5 text-[0.7rem] text-muted border border-muted/20 rounded-sm"
+                    >
+                      {c.name}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )
+      })()}
+
+      {/* ── Funding opportunities (revenue proposals) ── */}
       {revenueProps.length > 0 && (() => {
+
         const rsum = revenueSummary(revenueProps)
         return (
           <div className="mb-8 border border-blue-500/30 rounded-lg px-4 py-4 bg-blue-950/10">
