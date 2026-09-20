@@ -21,7 +21,7 @@
 
 import { randomBytes } from 'node:crypto'
 import { readFile, writeFile, mkdir, rename } from 'node:fs/promises'
-import { github, githubAppConfigured, walletAddress, emergencyThresholdDays } from './config.ts'
+import { github, githubAppConfigured, walletAddress, emergencyThresholdDays, modelPolicyConfig } from './config.ts'
 import { getRunway } from './runway.ts'
 import { getUsdcBalance } from './treasury.ts'
 import { decideRun } from './spendGuard.ts'
@@ -32,9 +32,11 @@ import {
 } from './survival.ts'
 import { recordAgentActivity } from './agentActivity.ts'
 import { listProposals } from './github.ts'
+import { recommendForMode } from './modelPolicy.ts'
 import type { SpendGuardDecision } from './spendGuard'
 import type { SurvivalLevel } from './survival'
 import type { AgentActivityEntry } from './agentActivity'
+import type { ModelRecommendation } from './modelPolicy'
 
 // ─── Config ───────────────────────────────────────────────────────────────
 
@@ -74,6 +76,10 @@ export interface TriggerState {
   lastRunwayDays: number | null
   /** Human reason from the last decision. */
   lastReason: string | null
+  /** Model tier recommended at the last decision (see modelPolicy.ts). */
+  lastModelTier?: 'complex' | 'cheap' | null
+  /** Model id recommended at the last decision. */
+  lastRecommendedModel?: string | null
 }
 
 export const EMPTY_TRIGGER_STATE: TriggerState = {
@@ -97,6 +103,26 @@ export function parseTriggerState(data: string): TriggerState {
     lastRunId: typeof parsed.lastRunId === 'string' ? parsed.lastRunId : null,
     lastRunwayDays: typeof parsed.lastRunwayDays === 'number' ? parsed.lastRunwayDays : null,
     lastReason: typeof parsed.lastReason === 'string' ? parsed.lastReason : null,
+    ...(Object.prototype.hasOwnProperty.call(parsed, 'lastModelTier')
+      ? {
+          lastModelTier:
+            parsed.lastModelTier === 'complex' || parsed.lastModelTier === 'cheap'
+              ? parsed.lastModelTier
+              : parsed.lastModelTier == null
+                ? null
+                : undefined,
+        }
+      : {}),
+    ...(Object.prototype.hasOwnProperty.call(parsed, 'lastRecommendedModel')
+      ? {
+          lastRecommendedModel:
+            typeof parsed.lastRecommendedModel === 'string'
+              ? parsed.lastRecommendedModel
+              : parsed.lastRecommendedModel == null
+                ? null
+                : undefined,
+        }
+      : {}),
   }
 }
 
@@ -189,6 +215,13 @@ export interface DispatchResult {
   survivalLevel: SurvivalLevel
   /** Emergency threshold in days that drove the mode. */
   emergencyThresholdDays: number
+  /**
+   * The model tier recommended for this run ('complex' | 'cheap' | null) and
+   * the model id to use. Set from the model policy (modelPolicy.ts) so routine
+   * / maintenance runs are routed to the cheapest capable model.
+   */
+  modelTier: ModelRecommendation['tier']
+  recommendedModel: string | null
 }
 
 /**
@@ -276,6 +309,14 @@ export async function runGuardedTrigger(
 
   const decision = decideRun(runway)
 
+  // Model policy: pick the model tier for this run from the spend-guard mode.
+  // Routine / downshifted runs route to the cheapest capable model; complex
+  // implementations keep the full-power model; a skip spends nothing.
+  const modelRec = recommendForMode(decision.mode, {
+    complexModel: modelPolicyConfig.complexModel,
+    cheapModel: modelPolicyConfig.cheapModel,
+  })
+
   // Snapshot the candidate proposals once so every terminal branch below can
   // record which proposals the agent was considering. Best-effort.
   const proposals = await boardProposals()
@@ -291,6 +332,8 @@ export async function runGuardedTrigger(
     runId: null,
     error: null,
     proposals,
+    modelTier: modelRec.tier,
+    recommendedModel: modelRec.model,
   })
 
   // Record the attempt (even when throttled — we still evaluated runway).
@@ -300,6 +343,8 @@ export async function runGuardedTrigger(
     lastMode: decision.mode,
     lastRunwayDays: runway.runwayDays,
     lastReason: decision.reason,
+    lastModelTier: modelRec.tier,
+    lastRecommendedModel: modelRec.model,
   }
 
   const result: DispatchResult = {
@@ -311,6 +356,8 @@ export async function runGuardedTrigger(
     error: null,
     survivalLevel,
     emergencyThresholdDays,
+    modelTier: modelRec.tier,
+    recommendedModel: modelRec.model,
   }
 
   if (throttled) {

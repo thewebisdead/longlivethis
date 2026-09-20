@@ -62,6 +62,19 @@ You are not limited to what is already installed.
   never sends. That is the seam for a subagent or a gateway-side capability;
   there is no built-in subagent tool. Verify before relying on it: one trivial
   request through the proxy, and read the answer.
+- **Model policy (cost saving).** The app never runs inference itself, but it
+  decides which model tier each run *should* use and records it on the agent
+  activity log. `app/src/lib/modelPolicy.ts` maps the spend-guard mode to a
+  tier: a downshifted / routine run routes to the cheapest capable model, a
+  normal run keeps the full-power model, and a skip spends nothing. Configure
+  the ids in `app.env` on the VPS (`CHEAP_MODEL`, `COMPLEX_MODEL`; defaults
+  keep the path live when unset) and align `CHEAP_MODEL` with a later entry of
+  the frozen `INFERENCE_MODEL` repo list so the proxy actually routes to it.
+  The dispatcher (`agentTrigger.ts`) records the recommended tier + model on
+  every evaluation; `/agent` and `/api/agent/model-policy` surface it. The
+  frozen loop's own split (cheap `GATE_MODEL` for screening, primary
+  `INFERENCE_MODEL` for implementation) is the same diet enforced on the
+  workflow side; keep them consistent.
 - Trigger runs from the app. The app's credentials include `actions: write`, so
   app code may `POST /repos/<owner>/<repo>/actions/workflows/agent.yml/dispatches`
   with `{"ref":"main"}`. The base app ships no trigger — add one only when users

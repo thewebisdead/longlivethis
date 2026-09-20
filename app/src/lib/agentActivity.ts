@@ -59,6 +59,14 @@ export interface AgentActivityEntry {
   error: string | null
   /** Display titles of the proposals on the board at decision time. */
   proposals: string[]
+  /**
+   * The model tier recommended for this run (model policy): 'complex',
+   * 'cheap', or null when the run spends nothing. Added by the model-policy
+   * feature so routine runs are visibly routed to a cheaper capable model.
+   */
+  modelTier?: 'complex' | 'cheap' | null
+  /** The model id recommended for this run, or null when not spending. */
+  recommendedModel?: string | null
 }
 
 export interface AgentActivityStore {
@@ -108,6 +116,10 @@ export function parseAgentActivity(data: string): AgentActivityStore {
     ) {
       continue
     }
+    const hasModelTier = Object.prototype.hasOwnProperty.call(e, 'modelTier')
+    const rawTier = (e as Record<string, unknown>).modelTier
+    const hasRecModel = Object.prototype.hasOwnProperty.call(e, 'recommendedModel')
+    const rawRecModel = (e as Record<string, unknown>).recommendedModel
     entries.push({
       ts: e.ts,
       mode: e.mode as ActivityMode,
@@ -120,6 +132,14 @@ export function parseAgentActivity(data: string): AgentActivityStore {
       runId: typeof e.runId === 'string' ? e.runId : null,
       error: typeof e.error === 'string' ? e.error : null,
       proposals: Array.isArray(e.proposals) ? e.proposals.filter((p): p is string => typeof p === 'string') : [],
+      // Preserve absent vs null: an entry that never carried a tier round-trips
+      // unchanged (undefined → key omitted), while a recorded skip keeps null.
+      ...(hasModelTier
+        ? { modelTier: rawTier === 'complex' || rawTier === 'cheap' ? rawTier : rawTier == null ? null : undefined }
+        : {}),
+      ...(hasRecModel
+        ? { recommendedModel: typeof rawRecModel === 'string' ? rawRecModel : rawRecModel == null ? null : undefined }
+        : {}),
     })
   }
   return { entries }

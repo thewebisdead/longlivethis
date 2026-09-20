@@ -31,6 +31,27 @@ test('parseTriggerState parses a valid state', () => {
   assert.deepEqual(parsed, state)
 })
 
+test('parseTriggerState round-trips model-policy fields', () => {
+  const state: TriggerState = {
+    lastAttemptTs: 1000,
+    lastDispatchTs: null,
+    lastMode: 'downshift',
+    lastRunId: null,
+    lastRunwayDays: null,
+    lastReason: 'critical',
+    lastModelTier: 'cheap',
+    lastRecommendedModel: 'lean-model',
+  }
+  assert.deepEqual(parseTriggerState(serializeTriggerState(state)), state)
+})
+
+test('parseTriggerState treats absent model fields as absent (not null)', () => {
+  const base = { lastAttemptTs: 1, lastMode: 'run', lastReason: 'x' }
+  const parsed = parseTriggerState(serializeTriggerState(base))
+  assert.equal('lastModelTier' in parsed, false)
+  assert.equal('lastRecommendedModel' in parsed, false)
+})
+
 test('parseTriggerState tolerates partial / missing fields', () => {
   const parsed = parseTriggerState('{}')
   assert.equal(parsed.lastAttemptTs, null)
