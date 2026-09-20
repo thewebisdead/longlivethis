@@ -20,7 +20,9 @@ import { readAgentActivity } from '@/lib/agentActivity'
 import { listAgentPullRequests, listAgentWorkflowRuns } from '@/lib/github'
 import { emergencyThresholdDays } from '@/lib/config'
 import { getSurvivalInfo } from '@/lib/survival'
+import { modelPolicyView } from '@/lib/modelPolicy'
 import type { AgentActivityEntry } from '@/lib/agentActivity'
+import type { ModelPolicyView } from '@/lib/modelPolicy'
 
 export const dynamic = 'force-dynamic'
 
@@ -58,6 +60,12 @@ function statusBadge(conclusion: string | null, status: string): { text: string;
   }
 }
 
+function tierBadge(tier: string | null | undefined): { text: string; cls: string } | null {
+  if (tier === 'cheap') return { text: 'cheap model', cls: 'bg-emerald-900/40 text-emerald-300' }
+  if (tier === 'complex') return { text: 'complex model', cls: 'bg-blue-900/40 text-blue-300' }
+  return null
+}
+
 export default async function AgentPage() {
   const [activity, ledger, prs, runs, survival] = await Promise.all([
     readAgentActivity().catch(() => ({ entries: [] as AgentActivityEntry[] })),
@@ -66,6 +74,8 @@ export default async function AgentPage() {
     listAgentWorkflowRuns().catch(() => []),
     getSurvivalInfo(emergencyThresholdDays).catch(() => null),
   ])
+
+  const policy: ModelPolicyView = modelPolicyView()
 
   const entries = activity.entries
   const dispatched = entries.filter((e) => e.dispatched).length
@@ -109,6 +119,26 @@ export default async function AgentPage() {
         </div>
       </div>
 
+      {/* Model policy — cheapest capable model for non-critical runs */}
+      <div className={`mb-8 rounded-lg border px-4 py-4 ${policy.cheapEnabled ? 'border-emerald-500/30 bg-emerald-950/10' : 'border-muted/30 bg-muted/5'}`}>
+        <div className="flex items-center justify-between mb-1">
+          <h2 className="text-[0.8rem] font-bold tracking-widest uppercase">
+            Model policy
+          </h2>
+          <span className={`text-[0.65rem] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded ${policy.cheapEnabled ? 'bg-emerald-900/40 text-emerald-300' : 'bg-muted/30 text-muted'}`}>
+            {policy.cheapEnabled ? 'lean routing on' : 'complex only'}
+          </span>
+        </div>
+        <p className="text-[0.78rem] text-muted">{policy.summary}</p>
+        <p className="mt-2 text-[0.7rem] text-muted">
+          routine / downshifted runs → <span className="text-fg">{policy.cheapModel ?? policy.complexModel}</span> ·
+          complex implementations → <span className="text-fg">{policy.complexModel}</span>
+        </p>
+        <p className="mt-1 text-[0.68rem] text-muted">
+          Raw data: <a href="/api/agent/model-policy" target="_blank" rel="noopener" className="text-muted underline underline-offset-2 hover:text-fg">/api/agent/model-policy</a>
+        </p>
+      </div>
+
       {/* Evaluations & decisions */}
       <h2 className="text-[0.8rem] font-bold tracking-widest uppercase mb-3">Evaluations &amp; decisions</h2>
       {entries.length === 0 ? (
@@ -126,6 +156,11 @@ export default async function AgentPage() {
                     <span className={`text-[0.65rem] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded ${m.cls}`}>
                       {m.text}
                     </span>
+                    {(() => { const t = tierBadge(e.modelTier); return t ? (
+                      <span className={`text-[0.65rem] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded ${t.cls}`}>
+                        {t.text}
+                      </span>
+                    ) : null })()}
                     {e.dispatched && (
                       <span className="text-[0.65rem] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-emerald-900/40 text-emerald-300">
                         dispatched
@@ -145,6 +180,7 @@ export default async function AgentPage() {
                 <p className="mt-2 text-[0.8rem]">{e.reason}</p>
                 <p className="mt-1 text-[0.7rem] text-muted">
                   runway {e.level} · {e.runwayDays === Infinity ? '∞' : `${e.runwayDays} days`} · survival {e.survivalLevel}
+                  {e.recommendedModel && <span> · model {e.recommendedModel}</span>}
                   {e.error && <span className="text-red-400"> · {e.error}</span>}
                 </p>
                 {e.proposals.length > 0 && (

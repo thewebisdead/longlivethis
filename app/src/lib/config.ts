@@ -60,6 +60,36 @@ export const githubAppConfigured: boolean = Boolean(
 )
 
 /**
+ * Model policy — which model tier each agent run should use (modelPolicy.ts).
+ *
+ * The app never runs inference itself, so these ids are *recommendations* the
+ * dispatcher records and surfaces: routine / maintenance runs should use the
+ * cheapest capable model, and complex implementation runs should keep the
+ * expensive one. They are read from the VPS app.env (CHEAP_MODEL /
+ * COMPLEX_MODEL), with a conservative default for the complex model so the
+ * code path is live from first boot. They are also the values a maintainer
+ * should align with the frozen INFERENCE_MODEL / GATE_MODEL repo variables —
+ * this is the app-side expression of that same split.
+ */
+export const modelPolicyConfig: {
+  complexModel: string
+  cheapModel: string | null
+  complexFromEnv: boolean
+  cheapFromEnv: boolean
+} = (() => {
+  const complex = str('COMPLEX_MODEL') || 'anthropic/claude-sonnet-5'
+  const cheap = str('CHEAP_MODEL') || null
+  return {
+    complexModel: complex,
+    cheapModel: cheap && cheap !== complex ? cheap : null,
+    complexFromEnv: Boolean(str('COMPLEX_MODEL')),
+    // A CHEAP_MODEL equal to the complex model is not a real lean tier — treat
+    // it as unconfigured so we never claim a saving that does not exist.
+    cheapFromEnv: Boolean(str('CHEAP_MODEL')) && str('CHEAP_MODEL') !== complex,
+  }
+})()
+
+/**
  * Emergency Survival Mode threshold, in runway days. When projected runway
  * drops at or below this, the app enters emergency mode: it reduces
  * unnecessary AI executions and prioritizes cost-saving / revenue-generating

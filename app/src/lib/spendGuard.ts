@@ -20,9 +20,12 @@
  * screening (the constitution gate) is a cheap per-candidate decision and only
  * the single winning proposal gets the full-power implementation model. That
  * split is the frozen loop's design (select-proposal.sh uses a cheap
- * GATE_MODEL; implement.sh uses the primary INFERENCE_MODEL). This module
- * enforces the *spend ceiling* half: it refuses to spend at all once the
- * runway no longer supports unguarded runs.
+ * GATE_MODEL; implement.sh uses the primary INFERENCE_MODEL). The app's own
+ * model policy (modelPolicy.ts) expresses the same split for the runs the app
+ * dispatches: routine / downshifted runs route to the cheapest capable model,
+ * complex implementations keep the full-power one. This module enforces the
+ * *spend ceiling* half: it refuses to spend at all once the runway no longer
+ * supports unguarded runs.
  */
 
 import type { RunwayInfo } from './runway'
